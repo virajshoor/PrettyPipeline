@@ -1,4 +1,4 @@
-"""CLI: prettypipeline run <file.pdf> --schema <schema.json>"""
+"""CLI: prettypipeline run | batch"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from prettypipeline.extract import needs_review, require_api_key, structure
+from prettypipeline.pipeline import run
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -16,62 +16,131 @@ def main(argv: list[str] | None = None) -> int:
         description="PDF → local OCR → cheap LLM JSON extraction.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
-    run = sub.add_parser("run", help="OCR a PDF and extract JSON using a schema")
-    run.add_argument("pdf", type=Path)
-    run.add_argument("--schema", type=Path, required=True)
-    run.add_argument("-o", "--output", type=Path, help="Write JSON here (also printed)")
-    run.add_argument("--ocr-only", action="store_true", help="Skip the cloud structuring step")
-    run.add_argument("--force-ocr", action="store_true", help="Always OCR, skip embedded PDF text")
-    run.add_argument("--device", choices=("cuda", "mps", "cpu"), default="", help="Override auto device")
-    run.add_argument("--dpi", type=int, default=300)
-    run.add_argument(
+
+    run_p = sub.add_parser("run", help="OCR a PDF and extract JSON using a schema")
+    _add_run_args(run_p)
+    run_p.add_argument("pdf", type=Path)
+
+    batch_p = sub.add_parser("batch", help="Process multiple PDFs with one schema")
+    _add_run_args(batch_p)
+    batch_p.add_argument("pdfs", nargs="+", type=Path, help="PDF files or directories")
+    batch_p.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Write one JSON file per PDF here",
+    )
+    batch_p.add_argument(
+        "--summary",
+        type=Path,
+        help="Optional path for batch summary JSON",
+    )
+
+    args = p.parse_args(argv)
+
+    if args.cmd == "run":
+        return _run_one(args)
+    if args.cmd == "batch":
+        return _run_batch(args)
+    p.print_help()
+    return 2
+
+
+def _add_run_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--schema", type=Path, required=True)
+    p.add_argument("-o", "--output", type=Path, help="Write JSON here (also printed)")
+    p.add_argument("--ocr-only", action="store_true", help="Skip the cloud structuring step")
+    p.add_argument("--force-ocr", action="store_true", help="Always OCR, skip embedded PDF text")
+    p.add_argument("--include-ocr-text", action="store_true", help="Include raw OCR/text in output")
+    p.add_argument("--device", choices=("cuda", "mps", "cpu"), default="", help="Override auto device")
+    p.add_argument("--dpi", type=int, default=300)
+    p.add_argument(
         "--max-length",
         type=int,
         default=None,
         help="OCR generation cap (default: 8192 on MPS, 32768 on CUDA/CPU)",
     )
-    args = p.parse_args(argv)
+    p.add_argument("--model", default="", help="LLM model (default: gpt-5.4-nano or PRETTYPIPELINE_MODEL)")
+    p.add_argument("--base-url", default="", help="OpenAI-compatible API base URL")
 
-    if args.cmd != "run":
-        p.print_help()
-        return 2
+
+def _run_kwargs(args) -> dict:
+    from prettypipeline.ocr import default_max_length, device_name
+
+    device = device_name(args.device)
+    max_length = args.max_length if args.max_length is not None else default_max_length(args.device)
+    print(f"device: {device}", file=sys.stderr)
+
+    kw = {
+        "force_ocr": args.force_ocr,
+        "dpi": args.dpi,
+        "device": args.device,
+        "max_length": max_length,
+        "ocr_only": args.ocr_only,
+        "include_ocr_text": args.include_ocr_text,
+    }
+    if args.model:
+        kw["model"] = args.model
+    if args.base_url:
+        kw["base_url"] = args.base_url
+    return kw
+
+
+def _run_one(args) -> int:
     if not args.pdf.is_file():
         print(f"not a file: {args.pdf}", file=sys.stderr)
         return 2
     schema = json.loads(args.schema.read_text())
-    from prettypipeline.ocr import default_max_length, extract_text, pick_device
-
-    device = args.device or str(pick_device())
-    max_length = args.max_length if args.max_length is not None else default_max_length(args.device)
-    print(f"device: {device}", file=sys.stderr)
-    text, source = extract_text(
-        str(args.pdf),
-        force_ocr=args.force_ocr,
-        dpi=args.dpi,
-        device=args.device,
-        max_length=max_length,
-    )
-    print(f"text source: {source}", file=sys.stderr)
-    if args.ocr_only:
-        result = {"data": None, "needs_review": [], "source": source, "ocr_text": text}
-        _emit(result, args.output, include_text=True)
-        return 0
-    require_api_key()
-    extracted = structure(text, schema)
-    result = {
-        "data": extracted["data"],
-        "needs_review": needs_review(extracted["data"], text, extracted["uncertain_fields"]),
-        "source": source,
-    }
-    _emit(result, args.output, include_text=False)
+    kw = _run_kwargs(args)
+    result = run(args.pdf, schema, **kw)
+    print(f"text source: {result.source}", file=sys.stderr)
+    _emit(result.to_dict(include_ocr_text=args.include_ocr_text), args.output)
     return 0
 
 
-def _emit(result: dict, output: Path | None, *, include_text: bool) -> None:
-    out = dict(result)
-    if not include_text:
-        out.pop("ocr_text", None)
-    blob = json.dumps(out, indent=2, ensure_ascii=False)
+def _collect_pdfs(paths: list[Path]) -> list[Path]:
+    out: list[Path] = []
+    for p in paths:
+        if p.is_file() and p.suffix.lower() == ".pdf":
+            out.append(p)
+        elif p.is_dir():
+            out.extend(sorted(p.glob("*.pdf")))
+    return out
+
+
+def _run_batch(args) -> int:
+    pdfs = _collect_pdfs(args.pdfs)
+    if not pdfs:
+        print("no PDF files found", file=sys.stderr)
+        return 2
+    schema = json.loads(args.schema.read_text())
+    kw = _run_kwargs(args)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = {"ok": [], "failed": []}
+    for pdf in pdfs:
+        out_path = args.output_dir / f"{pdf.stem}.json"
+        try:
+            result = run(pdf, schema, **kw)
+            blob = json.dumps(result.to_dict(include_ocr_text=args.include_ocr_text), indent=2, ensure_ascii=False)
+            out_path.write_text(blob + "\n")
+            summary["ok"].append({"file": str(pdf), "output": str(out_path), "source": result.source})
+            print(f"ok {pdf.name} → {out_path}", file=sys.stderr)
+        except SystemExit as e:
+            summary["failed"].append({"file": str(pdf), "error": str(e)})
+            print(f"fail {pdf.name}: {e}", file=sys.stderr)
+        except Exception as e:
+            summary["failed"].append({"file": str(pdf), "error": str(e)})
+            print(f"fail {pdf.name}: {e}", file=sys.stderr)
+
+    if args.summary:
+        args.summary.parent.mkdir(parents=True, exist_ok=True)
+        args.summary.write_text(json.dumps(summary, indent=2) + "\n")
+    return 0 if not summary["failed"] else 1
+
+
+def _emit(result: dict, output: Path | None) -> None:
+    blob = json.dumps(result, indent=2, ensure_ascii=False)
     print(blob)
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)

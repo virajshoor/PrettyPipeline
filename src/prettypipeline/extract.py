@@ -11,10 +11,18 @@ from openai import OpenAI
 
 from prettypipeline.ocr import clean_ocr_output
 
-MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = os.environ.get("PRETTYPIPELINE_MODEL", "gpt-5.4-nano")
 API_KEY_ENV = "OPENAI_API_KEY"
 
 _GARBLED = re.compile(r"[\ufffd]|[^\w\s.,:$€£¥%/@+#()\\-]{4,}")
+
+# Lower number = higher priority when deduplicating review reasons per field.
+_REASON_PRIORITY = {
+    "garbled_ocr": 0,
+    "not_in_source": 1,
+    "uncertain": 2,
+    "null": 3,
+}
 
 
 def require_api_key() -> str:
@@ -41,7 +49,6 @@ def _in_source(value: str, source_text: str) -> bool:
     hay = _normalize(source_text)
     if needle in hay:
         return True
-    # allow partial match for long strings (addresses, descriptions)
     if len(needle) >= 12:
         words = [w for w in needle.split() if len(w) >= 3]
         if words and sum(1 for w in words if w in hay) / len(words) >= 0.6:
@@ -85,8 +92,22 @@ def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def structure(source_text: str, schema: dict[str, Any], api_key: str | None = None) -> dict[str, Any]:
-    client = OpenAI(api_key=api_key or require_api_key())
+def _openai_client(api_key: str | None = None, base_url: str | None = None) -> OpenAI:
+    kwargs: dict[str, Any] = {"api_key": api_key or require_api_key()}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return OpenAI(**kwargs)
+
+
+def structure(
+    source_text: str,
+    schema: dict[str, Any],
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> dict[str, Any]:
+    client = _openai_client(api_key, base_url)
+    model_name = model or DEFAULT_MODEL
     cleaned = clean_ocr_output(source_text) if "<|det|>" in source_text or "<PAGE>" in source_text else source_text
     messages = [
         {
@@ -109,7 +130,7 @@ def structure(source_text: str, schema: dict[str, Any], api_key: str | None = No
         },
     ]
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=model_name,
         messages=messages,
         response_format=_strict_schema(schema),
     )
@@ -125,7 +146,21 @@ def structure(source_text: str, schema: dict[str, Any], api_key: str | None = No
         if path.startswith("data."):
             path = path[5:]
         cleaned_uncertain.append(path)
-    return {"data": data, "uncertain_fields": cleaned_uncertain}
+
+    usage = resp.usage
+    token_usage = None
+    if usage is not None:
+        token_usage = {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }
+
+    return {
+        "data": data,
+        "uncertain_fields": cleaned_uncertain,
+        "token_usage": token_usage,
+    }
 
 
 def _walk(obj: Any, prefix: str = "") -> list[tuple[str, Any]]:
@@ -172,25 +207,27 @@ def needs_review(
     source_text: str = "",
     uncertain: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    flags: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    """One reason per field — highest-priority reason wins."""
+    best: dict[str, str] = {}
 
-    def add(field: str, reason: str) -> None:
-        key = (field, reason)
-        if key not in seen:
-            seen.add(key)
-            flags.append({"field": field, "reason": reason})
+    def consider(field: str, reason: str) -> None:
+        if field not in best:
+            best[field] = reason
+            return
+        if _REASON_PRIORITY[reason] < _REASON_PRIORITY.get(best[field], 99):
+            best[field] = reason
 
     for path in uncertain or []:
-        add(path, "uncertain")
+        consider(path, "uncertain")
     for path, value in _walk(data):
         if value is None:
-            add(path, "null")
+            consider(path, "null")
         elif isinstance(value, str):
             if looks_garbled(value) or ocr_near_field_garbled(source_text, value):
-                add(path, "garbled_ocr")
+                consider(path, "garbled_ocr")
             elif not _in_source(value, source_text):
-                add(path, "not_in_source")
+                consider(path, "not_in_source")
         elif isinstance(value, (int, float)) and not _in_source(str(value), source_text):
-            add(path, "not_in_source")
-    return flags
+            consider(path, "not_in_source")
+
+    return [{"field": field, "reason": reason} for field, reason in sorted(best.items())]

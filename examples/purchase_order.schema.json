@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PurchaseOrder",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "po_number": { "type": ["string", "null"] },
+    "date": { "type": ["string", "null"] },
+    "vendor": { "type": ["string", "null"] },
+    "ship_to": { "type": ["string", "null"] },
+    "line_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sku": { "type": ["string", "null"] },
+          "description": { "type": ["string", "null"] },
+          "quantity": { "type": ["number", "null"] },
+          "unit_price": { "type": ["number", "null"] },
+          "amount": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "total": { "type": ["number", "null"] },
+    "currency": { "type": ["string", "null"] }
+  },
+  "required": ["po_number", "vendor", "line_items", "total"]
+}

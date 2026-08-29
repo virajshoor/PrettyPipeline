@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prettypipeline-ocr"
-version = "0.2.1"
+version = "0.3.0"
 description = "Turn PDFs into structured JSON with local OCR and a cheap cloud LLM."
 readme = "README.md"
 license = "MIT"
@@ -17,11 +17,30 @@ classifiers = [
 ]
 dependencies = [
     "pymupdf>=1.24",
+    "openai>=1.0",
+    "pillow",
+]
+
+[project.optional-dependencies]
+ocr = [
     "transformers>=4.57.1,<5",
     "torch",
     "torchvision",
-    "pillow",
-    "openai>=1.0",
+    "einops",
+    "addict",
+    "easydict",
+    "safetensors",
+    "tqdm",
+    "matplotlib",
+    "requests",
+]
+dev = [
+    "pytest>=8",
+    "build",
+    "twine",
+    "transformers>=4.57.1,<5",
+    "torch",
+    "torchvision",
     "einops",
     "addict",
     "easydict",
@@ -42,3 +61,7 @@ prettypipeline = "prettypipeline.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -5,18 +5,40 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sys
 import tempfile
 from functools import lru_cache
 
 import pymupdf as fitz
-import torch
-from transformers import AutoModel, AutoTokenizer
 
 MODEL_ID = "baidu/Unlimited-OCR"
 MPS_DEFAULT_MAX_LENGTH = 8192
 
 
-def pick_device(explicit: str | None = None) -> torch.device:
+def _require_ocr_deps() -> None:
+    try:
+        import torch  # noqa: F401
+    except ImportError as e:
+        raise SystemExit(
+            "OCR requires ML dependencies. Install with:\n"
+            "  pip install prettypipeline-ocr[ocr]"
+        ) from e
+
+
+def device_name(explicit: str = "") -> str:
+    """Human-readable device label; does not require OCR deps."""
+    if explicit:
+        return explicit
+    try:
+        return str(pick_device(None))
+    except SystemExit:
+        return "n/a"
+
+
+def pick_device(explicit: str | None = None):
+    _require_ocr_deps()
+    import torch
+
     if explicit:
         return torch.device(explicit)
     if torch.cuda.is_available():
@@ -27,12 +49,17 @@ def pick_device(explicit: str | None = None) -> torch.device:
 
 
 def default_max_length(device: str = "") -> int:
-    dev = pick_device(device or None)
-    return MPS_DEFAULT_MAX_LENGTH if dev.type == "mps" else 32768
+    try:
+        dev = pick_device(device or None)
+        return MPS_DEFAULT_MAX_LENGTH if dev.type == "mps" else 32768
+    except SystemExit:
+        return 32768
 
 
-def _patch_cuda_calls(device: torch.device) -> None:
+def _patch_cuda_calls(device) -> None:
     """Unlimited-OCR hardcodes Tensor.cuda() and autocast('cuda')."""
+    import torch
+
     if device.type == "cuda":
         return
 
@@ -62,12 +89,22 @@ def _patch_cuda_calls(device: torch.device) -> None:
     torch.autocast = _autocast  # type: ignore[assignment]
 
 
-def _dtype_for(device: torch.device) -> torch.dtype:
+def _dtype_for(device):
+    import torch
+
     if device.type == "cuda":
         return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     if device.type == "mps":
         return torch.bfloat16
     return torch.float32
+
+
+def count_pdf_pages(pdf_path: str) -> int:
+    doc = fitz.open(pdf_path)
+    try:
+        return len(doc)
+    finally:
+        doc.close()
 
 
 def extract_pdf_text(pdf_path: str) -> str:
@@ -127,8 +164,19 @@ def pdf_to_images(pdf_path: str, dpi: int = 300) -> tuple[list[str], str]:
     return paths, tmp_dir
 
 
+def _rasterize_page(page, dpi: int, tmp_dir: str, index: int) -> str:
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    out = os.path.join(tmp_dir, f"page_{index + 1:04d}.png")
+    page.get_pixmap(matrix=mat).save(out)
+    return out
+
+
 @lru_cache(maxsize=1)
-def load_model(device_str: str = "") -> tuple[object, object, torch.device]:
+def load_model(device_str: str = "") -> tuple[object, object, object]:
+    _require_ocr_deps()
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
     device = pick_device(device_str or None)
     _patch_cuda_calls(device)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -195,6 +243,29 @@ def ocr_pdf(
             shutil.rmtree(out, ignore_errors=True)
 
 
+def _ocr_page_image(
+    model,
+    tokenizer,
+    image_path: str,
+    max_length: int,
+) -> str:
+    out = tempfile.mkdtemp(prefix="ocr_page_")
+    try:
+        return _run_ocr(model, tokenizer, [image_path], out, max_length)
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
+def _warn_mps_force_ocr(device: str) -> None:
+    dev = pick_device(device or None)
+    if dev.type == "mps":
+        print(
+            "warning: --force-ocr on Apple Silicon (MPS) may produce garbled output; "
+            "CUDA is recommended for OCR.",
+            file=sys.stderr,
+        )
+
+
 def extract_text(
     pdf_path: str,
     *,
@@ -203,9 +274,47 @@ def extract_text(
     device: str = "",
     max_length: int | None = None,
 ) -> tuple[str, str]:
-    """Return (text, source) where source is 'pdf_text' or 'ocr'."""
-    if not force_ocr:
-        embedded = extract_pdf_text(pdf_path)
-        if looks_like_digital_pdf(embedded):
-            return embedded, "pdf_text"
-    return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"
+    """Return (text, source) where source is 'pdf_text', 'ocr', or 'mixed'."""
+    if force_ocr:
+        _warn_mps_force_ocr(device)
+        return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"
+
+    if max_length is None:
+        max_length = default_max_length(device)
+
+    doc = fitz.open(pdf_path)
+    tmp_dir = tempfile.mkdtemp(prefix="pdf_hybrid_")
+    parts: list[str] = []
+    used_pdf_text = False
+    used_ocr = False
+    model = tokenizer = None
+
+    try:
+        multi_page = len(doc) > 1
+        for i, page in enumerate(doc):
+            page_text = page.get_text().strip()
+            if looks_like_digital_pdf(page_text):
+                if multi_page:
+                    parts.append(f"--- Page {i + 1} ---\n{page_text}")
+                else:
+                    parts.append(page_text)
+                used_pdf_text = True
+            else:
+                if model is None:
+                    model, tokenizer, _ = load_model(device)
+                img_path = _rasterize_page(page, dpi, tmp_dir, i)
+                ocr_text = _ocr_page_image(model, tokenizer, img_path, max_length)
+                if multi_page:
+                    parts.append(f"--- Page {i + 1} ---\n{ocr_text}")
+                else:
+                    parts.append(ocr_text)
+                used_ocr = True
+    finally:
+        doc.close()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if not parts:
+        return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"
+
+    source = "mixed" if used_pdf_text and used_ocr else ("pdf_text" if used_pdf_text else "ocr")
+    return "\n\n".join(parts), source

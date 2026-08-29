@@ -1,0 +1,21 @@
+# CUDA image for PrettyPipeline OCR + extraction on Linux servers.
+# Build:  docker build -f Dockerfile.cuda -t prettypipeline:cuda .
+# Run:    docker run --gpus all -e OPENAI_API_KEY=sk-... \
+#           -v $(pwd)/data:/data prettypipeline:cuda \
+#           run /data/invoice.pdf --schema /data/schema.json -o /data/out.json
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+COPY examples ./examples
+
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124 \
+    && pip install --no-cache-dir ".[ocr]"
+
+ENTRYPOINT ["prettypipeline"]

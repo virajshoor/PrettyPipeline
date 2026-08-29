@@ -1,6 +1,7 @@
 from prettypipeline.extract import needs_review
 from prettypipeline.ocr import (
     clean_ocr_output,
+    count_pdf_pages,
     cut_repetition,
     extract_pdf_text,
     looks_like_digital_pdf,
@@ -23,6 +24,14 @@ def test_not_in_source():
     assert ("vendor", "not_in_source") in reasons
 
 
+def test_review_dedup_one_reason_per_field():
+    data = {"currency": None}
+    flags = needs_review(data, uncertain=["currency"])
+    by_field = {f["field"]: f["reason"] for f in flags}
+    assert by_field["currency"] == "uncertain"
+    assert len(flags) == 1
+
+
 def test_cut_repetition():
     assert cut_repetition("hello zzzzzzzzzz world") == "hello"
     assert cut_repetition("a b c a b c a b c") == "a b c a b c"
@@ -40,10 +49,10 @@ def test_sample_invoice_has_embedded_text():
     assert looks_like_digital_pdf(text)
 
 
-if __name__ == "__main__":
-    test_null_uncertain_garbled()
-    test_not_in_source()
-    test_cut_repetition()
-    test_digital_pdf_detection()
-    test_sample_invoice_has_embedded_text()
-    print("ok")
+def test_count_pdf_pages():
+    assert count_pdf_pages("tests/fixtures/sample_invoice.pdf") == 1
+
+
+def test_clean_ocr_output_strips_det_tokens():
+    raw = "<|det|>header [1,2]<|/det|>Hello world"
+    assert clean_ocr_output(raw) == "Hello world"

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "merchant": { "type": ["string", "null"] },
+    "date": { "type": ["string", "null"] },
+    "time": { "type": ["string", "null"] },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": ["string", "null"] },
+          "amount": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "subtotal": { "type": ["number", "null"] },
+    "tax": { "type": ["number", "null"] },
+    "tip": { "type": ["number", "null"] },
+    "total": { "type": ["number", "null"] },
+    "payment_method": { "type": ["string", "null"] }
+  },
+  "required": ["merchant", "total"]
+}
