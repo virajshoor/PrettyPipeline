@@ -5,6 +5,7 @@ from prettypipeline.ocr import (
     cut_repetition,
     extract_pdf_text,
     looks_like_digital_pdf,
+    merge_texts,
 )
 
 
@@ -51,6 +52,20 @@ def test_sample_invoice_has_embedded_text():
 
 def test_count_pdf_pages():
     assert count_pdf_pages("tests/fixtures/sample_invoice.pdf") == 1
+
+
+def test_merge_texts_adds_supplement():
+    embedded = "Invoice INV-3337 total 93.5"
+    ocr = "Invoice INV-3337 total 93.5\n\nStamp: PAID IN FULL"
+    merged = merge_texts(embedded, ocr)
+    assert "PAID IN FULL" in merged
+    assert "OCR supplement" in merged
+
+
+def test_merge_texts_dedupes():
+    embedded = "Hello world from Acme Corp"
+    ocr = "Hello world from Acme Corp"
+    assert merge_texts(embedded, ocr) == embedded
 
 
 def test_clean_ocr_output_strips_det_tokens():

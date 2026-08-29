@@ -45,6 +45,7 @@ def run(
     *,
     ocr_only: bool = False,
     force_ocr: bool = False,
+    embedded_only: bool = False,
     use_vision: bool = True,
     image_detail: str = "low",
     device: str = "",
@@ -70,25 +71,14 @@ def run(
     model_name = model or DEFAULT_MODEL
 
     segments = segment_pdf(str(pdf_path))
-    text = segments.text
-    source = segments.source
-
-    if force_ocr or (not text.strip() and source != "pdf_text"):
-        ocr_text, ocr_source = extract_text(
-            str(pdf_path),
-            force_ocr=force_ocr,
-            dpi=dpi,
-            device=device,
-            max_length=max_length,
-        )
-        if ocr_text.strip():
-            text = ocr_text
-            if segments.images and ocr_source != "pdf_text":
-                source = "mixed"
-            elif segments.images:
-                source = "mixed"
-            else:
-                source = ocr_source
+    text, source = extract_text(
+        str(pdf_path),
+        force_ocr=force_ocr,
+        embedded_only=embedded_only,
+        dpi=dpi,
+        device=device,
+        max_length=max_length,
+    )
 
     vision_images = [img.to_api_dict(detail=image_detail) for img in segments.images] if use_vision else []
 
@@ -100,7 +90,7 @@ def run(
         "model": model_name if not ocr_only else None,
         "token_usage": None,
         "vision_images": len(vision_images),
-        "segments": {"text_chars": len(text), "figures": len(vision_images)},
+        "segments": {"text_chars": len(text), "figures": len(vision_images), "text_source": source},
     }
 
     if ocr_only:

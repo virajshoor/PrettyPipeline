@@ -55,7 +55,12 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--schema", type=Path, required=True)
     p.add_argument("-o", "--output", type=Path, help="Write JSON here (also printed)")
     p.add_argument("--ocr-only", action="store_true", help="Skip the cloud structuring step")
-    p.add_argument("--force-ocr", action="store_true", help="Always OCR text, skip embedded PDF text")
+    p.add_argument("--force-ocr", action="store_true", help="OCR only — ignore embedded PDF text")
+    p.add_argument(
+        "--embedded-only",
+        action="store_true",
+        help="Skip Baidu OCR supplement (embedded text only, faster)",
+    )
     p.add_argument("--no-vision", action="store_true", help="Do not send segregated figures to GPT")
     p.add_argument(
         "--image-detail",
@@ -85,6 +90,7 @@ def _run_kwargs(args) -> dict:
 
     kw: dict = {
         "force_ocr": args.force_ocr,
+        "embedded_only": args.embedded_only,
         "use_vision": not args.no_vision,
         "image_detail": args.image_detail,
         "dpi": args.dpi,

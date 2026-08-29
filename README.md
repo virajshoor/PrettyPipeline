@@ -30,30 +30,38 @@ Turn PDFs into structured JSON. Text comes from embedded PDF content or local OC
              └───────────────────────────┼────────────────────────────┘
                                          │
                                          ▼
-                            ┌────────────────────────┐
-                            │   GPT-5.4 nano (cloud) │
-                            │   text + figure images │
-                            │   strict JSON schema   │
-                            └───────────┬────────────┘
-                                        │
-                    ┌───────────────────┼───────────────────┐
-                    ▼                   ▼                   ▼
-              ┌──────────┐      ┌─────────────┐    ┌──────────────┐
-              │   JSON   │      │ needs_review│    │ Export formats│
-              │  + _meta │      │   flags     │    │ csv alpaca   │
-              └──────────┘      └─────────────┘    │ sharegpt qa  │
-                                                   │ openai jsonl │
-                                                   └──────────────┘
-
-Local OCR (Unlimited-OCR) only when a page has no usable embedded text
-and `--force-ocr` is set or hybrid routing needs it. Requires `[ocr]` extra.
+              ┌────────────────────────┐
+              │   Embedded PDF text    │
+              └───────────┬────────────┘
+                          │ merge (dedupe)
+              ┌───────────▼────────────┐
+              │ Baidu Unlimited-OCR    │  ← default: always runs ([ocr] extra)
+              │ (full document)        │
+              └───────────┬────────────┘
+                          │
+                          ▼
+              ┌────────────────────────┐
+              │  Combined document text │
+              │  + segregated figures   │──► GPT-5.4 nano
+              └────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+     ┌─────────┐   ┌─────────────┐  ┌──────────────┐
+     │  JSON   │   │needs_review │  │Export formats│
+     │ + _meta │   │   flags     │  │ csv alpaca…  │
+     └─────────┘   └─────────────┘  └──────────────┘
 ```
+
+Local OCR (Unlimited-OCR) runs on **every document by default** (requires `[ocr]` extra),
+merged with embedded PDF text so nothing is missed — text in images, stamps, scan layers.
+Use `--embedded-only` to skip OCR (faster). Use `--force-ocr` for OCR-only.
 
 ## Why this is cheap
 
 - **Digital PDFs** — embedded text is free and accurate; no GPU needed.
 - **Figures only** — segregated embedded images go to GPT vision at `detail=low` (not full-page raster).
-- **Local OCR** — [baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) for scan pages only (`pip install prettypipeline-ocr[ocr]`).
+- **Baidu OCR + merge** — full-document OCR merged with embedded text by default (`[ocr]` extra).
 - **GPT-5.4 nano** — ~$0.20 / 1M input tokens for structuring ([pricing](https://developers.openai.com/api/docs/models/gpt-5.4-nano)).
 
 ## Install
@@ -149,8 +157,8 @@ prettypipeline run FILE.pdf --schema SCHEMA.json
   --export csv,alpaca,...     comma-separated training exports
   --no-vision                 skip figure images to GPT
   --image-detail low|auto|high  vision token budget (default: low)
-  --ocr-only                  skip GPT step
-  --force-ocr                 always OCR text locally
+  --embedded-only             skip Baidu OCR supplement (embedded text only)
+  --force-ocr                 OCR only — ignore embedded text
   --model, --base-url         LLM settings
 
 prettypipeline batch FILES... --schema SCHEMA.json --output-dir DIR
@@ -167,7 +175,7 @@ Environment: `OPENAI_API_KEY`, `PRETTYPIPELINE_MODEL`, `PRETTYPIPELINE_BASE_URL`
   "needs_review": [],
   "source": "pdf_text",
   "_meta": {
-    "version": "0.4.0",
+    "version": "0.4.1",
     "elapsed_ms": 3200,
     "pages": 1,
     "vision_images": 1,

@@ -12,24 +12,24 @@ SCHEMA = ROOT / "examples/invoice.schema.json"
 
 
 def test_run_ocr_only_digital_pdf():
-    result = run(SAMPLE, SCHEMA, ocr_only=True, include_ocr_text=True)
+    result = run(SAMPLE, SCHEMA, ocr_only=True, embedded_only=True, include_ocr_text=True)
     assert result.source == "pdf_text"
     assert result.data is None
     assert "Sliced" in (result.ocr_text or "")
 
 
 def test_run_full_pipeline():
-    result = run(SAMPLE, SCHEMA)
+    result = run(SAMPLE, SCHEMA, embedded_only=True)
     assert result.source == "pdf_text"
     assert result.data["invoice_number"] == "INV-3337"
     assert result.data["total"] == 93.5
     assert result.meta["pages"] == 1
-    assert result.meta["version"] == "0.4.0"
+    assert result.meta["version"] == "0.4.1"
     assert result.meta["token_usage"] is not None
 
 
 def test_run_to_dict_has_meta():
-    result = run(SAMPLE, SCHEMA, ocr_only=True, include_ocr_text=True)
+    result = run(SAMPLE, SCHEMA, ocr_only=True, embedded_only=True, include_ocr_text=True)
     d = result.to_dict(include_ocr_text=True)
     assert "_meta" in d
     assert d["ocr_text"]
@@ -46,6 +46,7 @@ def test_cli_run_subprocess():
             "--schema",
             str(SCHEMA),
             "--ocr-only",
+            "--embedded-only",
         ],
         cwd=ROOT,
         capture_output=True,

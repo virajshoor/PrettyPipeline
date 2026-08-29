@@ -122,6 +122,58 @@ def looks_like_digital_pdf(text: str) -> bool:
     return alnum / max(len(text), 1) >= 0.35
 
 
+def _normalize_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower().strip())
+
+
+def _looks_garbled_simple(text: str) -> bool:
+    if not text or len(text.strip()) < 8:
+        return False
+    s = text.strip()
+    alnum = sum(c.isalnum() for c in s)
+    return alnum / len(s) < 0.25
+
+
+def merge_texts(embedded: str, ocr: str) -> str:
+    """
+    Combine embedded PDF text with Baidu OCR output.
+
+    Keeps embedded text as the base and appends OCR blocks that are not already
+    present (e.g. text inside images, stamps, scan layers).
+    """
+    embedded = embedded.strip()
+    ocr = clean_ocr_output(ocr).strip()
+
+    if not embedded:
+        return ocr
+    if not ocr:
+        return embedded
+
+    hay = _normalize_compare(embedded)
+    ocr_norm = _normalize_compare(ocr)
+    if ocr_norm in hay or ocr_norm == hay:
+        return embedded
+
+    supplements: list[str] = []
+    for block in re.split(r"\n{2,}", ocr):
+        block = block.strip()
+        if len(block) < 5 or _looks_garbled_simple(block):
+            continue
+        block_norm = _normalize_compare(block)
+        if block_norm in hay:
+            continue
+        words = [w for w in block_norm.split() if len(w) >= 3]
+        if words and sum(1 for w in words if w in hay) / len(words) > 0.85:
+            continue
+        supplements.append(block)
+
+    if not supplements:
+        return embedded
+
+    header = "--- OCR supplement (text not in embedded layer) ---"
+    return embedded + f"\n\n{header}\n\n" + "\n\n".join(supplements)
+
+
 def cut_repetition(text: str) -> str:
     """Stop at the first long repeat — Unlimited-OCR can loop on MPS."""
     m = re.search(r"(.)\1{7,}", text)
@@ -194,7 +246,7 @@ def load_model(device_str: str = "") -> tuple[object, object, object]:
 
 def _run_ocr(model, tokenizer, paths: list[str], out: str, max_length: int) -> str:
     if len(paths) == 1:
-        text, _ = model.infer(
+        result = model.infer(
             tokenizer,
             prompt="<image>document parsing.",
             image_file=paths[0],
@@ -207,8 +259,11 @@ def _run_ocr(model, tokenizer, paths: list[str], out: str, max_length: int) -> s
             ngram_window=128,
             save_results=False,
         )
+        if not result or result[0] is None:
+            return ""
+        text, _ = result
     else:
-        text, _ = model.infer_multi(
+        result = model.infer_multi(
             tokenizer,
             prompt="<image>Multi page parsing.",
             image_files=paths,
@@ -219,6 +274,9 @@ def _run_ocr(model, tokenizer, paths: list[str], out: str, max_length: int) -> s
             ngram_window=1024,
             save_results=False,
         )
+        if not result or result[0] is None:
+            return ""
+        text, _ = result
     return clean_ocr_output(text)
 
 
@@ -256,12 +314,15 @@ def _ocr_page_image(
         shutil.rmtree(out, ignore_errors=True)
 
 
-def _warn_mps_force_ocr(device: str) -> None:
-    dev = pick_device(device or None)
+def _warn_mps_ocr(device: str, *, context: str) -> None:
+    try:
+        dev = pick_device(device or None)
+    except SystemExit:
+        return
     if dev.type == "mps":
         print(
-            "warning: --force-ocr on Apple Silicon (MPS) may produce garbled output; "
-            "CUDA is recommended for OCR.",
+            f"warning: Baidu OCR on Apple Silicon (MPS) may be slow or garbled; "
+            f"CUDA recommended ({context}).",
             file=sys.stderr,
         )
 
@@ -270,18 +331,84 @@ def extract_text(
     pdf_path: str,
     *,
     force_ocr: bool = False,
+    embedded_only: bool = False,
     dpi: int = 300,
     device: str = "",
     max_length: int | None = None,
 ) -> tuple[str, str]:
-    """Return (text, source) where source is 'pdf_text', 'ocr', or 'mixed'."""
-    if force_ocr:
-        _warn_mps_force_ocr(device)
-        return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"
+    """
+    Return (text, source).
 
+    Default: embedded text + full-document Baidu OCR merged for complete coverage.
+    force_ocr: OCR only, ignore embedded text.
+    embedded_only: embedded / per-page hybrid without Baidu OCR supplement.
+    """
     if max_length is None:
         max_length = default_max_length(device)
 
+    if force_ocr:
+        _warn_mps_ocr(device, context="--force-ocr")
+        return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"
+
+    embedded = extract_pdf_text(pdf_path)
+    has_embedded = bool(embedded.strip())
+
+    if embedded_only:
+        return _extract_embedded_hybrid(
+            pdf_path,
+            dpi=dpi,
+            device=device,
+            max_length=max_length,
+        )
+
+    # --- Default: supplement with Baidu OCR for complete text ---
+    try:
+        _require_ocr_deps()
+    except SystemExit:
+        if has_embedded:
+            print(
+                "note: install prettypipeline-ocr[ocr] for Baidu OCR text supplement",
+                file=sys.stderr,
+            )
+            return embedded, "pdf_text"
+        raise SystemExit(
+            "No embedded text found and OCR dependencies missing.\n"
+            "  pip install prettypipeline-ocr[ocr]"
+        ) from None
+
+    _warn_mps_ocr(device, context="default OCR supplement")
+
+    try:
+        ocr_text = ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length)
+    except Exception as exc:
+        print(f"warning: Baidu OCR failed ({exc}); using embedded text only", file=sys.stderr)
+        if has_embedded:
+            return embedded, "pdf_text"
+        raise
+
+    if not ocr_text.strip():
+        if has_embedded:
+            print("warning: Baidu OCR returned empty; using embedded text only", file=sys.stderr)
+            return embedded, "pdf_text"
+        return "", "ocr"
+
+    if not has_embedded:
+        return ocr_text, "ocr"
+
+    merged = merge_texts(embedded, ocr_text)
+    if merged == embedded.strip():
+        return embedded, "pdf_text"
+    return merged, "pdf_text+ocr"
+
+
+def _extract_embedded_hybrid(
+    pdf_path: str,
+    *,
+    dpi: int,
+    device: str,
+    max_length: int,
+) -> tuple[str, str]:
+    """Legacy fast path: embedded text per page, OCR only for scan pages."""
     doc = fitz.open(pdf_path)
     tmp_dir = tempfile.mkdtemp(prefix="pdf_hybrid_")
     parts: list[str] = []
