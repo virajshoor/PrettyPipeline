@@ -4,7 +4,7 @@
 
 <p align="left">
   <img
-    src="https://raw.githubusercontent.com/virajshoor/PrettyPipeline/main/docs/logo.jpg?v=0.5.1"
+    src="https://raw.githubusercontent.com/virajshoor/PrettyPipeline/main/docs/logo.jpg?v=0.5.1-r2"
     alt="PrettyPipeline — PDF, JSON, and CSV through a pipeline into OCR"
     width="372"
   />
