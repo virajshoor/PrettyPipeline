@@ -7,6 +7,7 @@
     src="https://raw.githubusercontent.com/virajshoor/PrettyPipeline/main/docs/logo.jpg"
     alt="PrettyPipeline — PDF, JSON, and CSV through a pipeline into OCR"
     width="372"
+    style="border-radius: 18px;"
   />
 </p>
 
@@ -216,6 +217,7 @@ Environment: `OPENAI_API_KEY`, `PRETTYPIPELINE_MODEL`, `PRETTYPIPELINE_BASE_URL`
     "version": "0.5.0",
     "elapsed_ms": 3200,
     "pages": 1,
+    "llm_provider": "openai",
     "vision_images": 1,
     "segments": { "text_chars": 842, "figures": 1 },
     "token_usage": { "prompt_tokens": 1100, "completion_tokens": 95, "total_tokens": 1195 }
