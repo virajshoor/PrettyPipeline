@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prettypipeline-ocr"
-version = "0.2.0"
+version = "0.2.1"
 description = "Turn PDFs into structured JSON with local OCR and a cheap cloud LLM."
 readme = "README.md"
 license = "MIT"

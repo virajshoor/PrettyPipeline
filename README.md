@@ -102,7 +102,7 @@ prettypipeline run FILE.pdf --schema SCHEMA.json
   --force-ocr           always OCR, skip embedded PDF text
   --device cuda|mps|cpu override auto-detect (cuda → mps → cpu)
   --dpi N               PDF raster DPI (default 300)
-  --max-length N        OCR cap (default 2048 on MPS, 32768 on CUDA/CPU)
+  --max-length N        OCR cap (default 8192 on MPS, 32768 on CUDA/CPU)
 ```
 
 `OPENAI_API_KEY` is required unless you pass `--ocr-only`. It is never hardcoded.
@@ -112,17 +112,13 @@ prettypipeline run FILE.pdf --schema SCHEMA.json
 ```json
 {
   "data": {
-    "date": null,
+    "date": "January 25, 2016",
     "vendor": "DEMO - Sliced Invoices",
-    "bill_to": "Test Business",
-    "line_items": [],
-    "total": null
+    "invoice_number": "INV-3337",
+    "total": 93.5
   },
-  "needs_review": [
-    { "field": "date", "reason": "null" },
-    { "field": "total", "reason": "null" }
-  ],
-  "ocr_text": "…"
+  "needs_review": [],
+  "source": "pdf_text"
 }
 ```
 
@@ -130,6 +126,7 @@ prettypipeline run FILE.pdf --schema SCHEMA.json
 |---|---|
 | `null` | model returned null |
 | `uncertain` | model marked the field as a guess |
+| `garbled_ocr` | extracted text (or nearby OCR) looks corrupted |
 | `not_in_source` | extracted value not found in document text |
 
 ## Hardware

@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
         "--max-length",
         type=int,
         default=None,
-        help="OCR generation cap (default: 2048 on MPS, 32768 on CUDA/CPU)",
+        help="OCR generation cap (default: 8192 on MPS, 32768 on CUDA/CPU)",
     )
     args = p.parse_args(argv)
 

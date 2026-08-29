@@ -13,7 +13,7 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 
 MODEL_ID = "baidu/Unlimited-OCR"
-MPS_DEFAULT_MAX_LENGTH = 2048
+MPS_DEFAULT_MAX_LENGTH = 8192
 
 
 def pick_device(explicit: str | None = None) -> torch.device:
