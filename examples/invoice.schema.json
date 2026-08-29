@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Invoice",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "date": { "type": ["string", "null"], "description": "Invoice date as written on the document" },
+    "vendor": { "type": ["string", "null"], "description": "Seller / vendor name" },
+    "invoice_number": { "type": ["string", "null"] },
+    "bill_to": { "type": ["string", "null"], "description": "Customer / billed-to name" },
+    "line_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "description": { "type": ["string", "null"] },
+          "quantity": { "type": ["number", "null"] },
+          "unit_price": { "type": ["number", "null"] },
+          "amount": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "subtotal": { "type": ["number", "null"] },
+    "tax": { "type": ["number", "null"] },
+    "total": { "type": ["number", "null"] },
+    "currency": { "type": ["string", "null"] }
+  },
+  "required": ["date", "vendor", "line_items", "total"]
+}

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prettypipeline-ocr"
+version = "0.1.0"
+description = "Turn PDFs into structured JSON with local OCR and a cheap cloud LLM."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10,<3.14"
+authors = [{ name = "greatshoor" }]
+keywords = ["ocr", "pdf", "llm", "extraction", "json"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "pymupdf>=1.24",
+    "transformers>=4.57.1,<5",
+    "torch",
+    "torchvision",
+    "pillow",
+    "openai>=1.0",
+    "einops",
+    "addict",
+    "easydict",
+    "safetensors",
+    "tqdm",
+    "matplotlib",
+    "requests",
+]
+
+[project.urls]
+Homepage = "https://github.com/virajshoor/PrettyPipeline"
+Repository = "https://github.com/virajshoor/PrettyPipeline"
+Issues = "https://github.com/virajshoor/PrettyPipeline/issues"
+PyPI = "https://pypi.org/project/prettypipeline-ocr/"
+
+[project.scripts]
+prettypipeline = "prettypipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
