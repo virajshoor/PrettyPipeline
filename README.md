@@ -1,13 +1,12 @@
 # PrettyPipeline
 
-<!-- version: 0.5.0 -->
+<!-- version: 0.5.1 -->
 
 <p align="left">
   <img
-    src="https://raw.githubusercontent.com/virajshoor/PrettyPipeline/main/docs/logo.jpg"
+    src="https://raw.githubusercontent.com/virajshoor/PrettyPipeline/main/docs/logo.jpg?v=0.5.1"
     alt="PrettyPipeline — PDF, JSON, and CSV through a pipeline into OCR"
     width="372"
-    style="border-radius: 18px;"
   />
 </p>
 
@@ -15,7 +14,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/prettypipeline-ocr.svg)](https://pypi.org/project/prettypipeline-ocr/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Latest release: [v0.5.0](https://pypi.org/project/prettypipeline-ocr/0.5.0/)** · Requires `pip install prettypipeline-ocr` (add `[ocr]` for Baidu OCR)
+**Latest release: [v0.5.1](https://pypi.org/project/prettypipeline-ocr/0.5.1/)** · Requires `pip install prettypipeline-ocr` (add `[ocr]` for Baidu OCR)
 
 Turn PDFs into structured JSON. Text comes from embedded PDF content or local OCR. **Figures are segregated and sent directly to GPT-5.4** — never the whole PDF as one image. Export to CSV and common LLM fine-tuning formats.
 
@@ -214,7 +213,7 @@ Environment: `OPENAI_API_KEY`, `PRETTYPIPELINE_MODEL`, `PRETTYPIPELINE_BASE_URL`
   "needs_review": [],
   "source": "pdf_text",
   "_meta": {
-    "version": "0.5.0",
+    "version": "0.5.1",
     "elapsed_ms": 3200,
     "pages": 1,
     "llm_provider": "openai",
