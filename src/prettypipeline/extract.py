@@ -105,29 +105,54 @@ def structure(
     api_key: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
+    images: list[dict[str, Any]] | None = None,
+    image_detail: str = "low",
 ) -> dict[str, Any]:
     client = _openai_client(api_key, base_url)
     model_name = model or DEFAULT_MODEL
     cleaned = clean_ocr_output(source_text) if "<|det|>" in source_text or "<PAGE>" in source_text else source_text
+
+    prompt_text = (
+        "Target schema for data:\n"
+        f"{json.dumps(schema, indent=2)}\n\n"
+        "Document text:\n"
+        f"{cleaned or '(no embedded text — use attached figures if present)'}"
+    )
+    if images:
+        prompt_text += (
+            f"\n\n{len(images)} figure(s) attached below for visual context only. "
+            "Do not transcribe figures as CSV or tables — use them to fill schema fields."
+        )
+
+    user_content: list[dict[str, Any]] | str
+    if images:
+        parts: list[dict[str, Any]] = [{"type": "text", "text": prompt_text}]
+        for img in images:
+            parts.append({"type": "text", "text": img.get("label", "Figure")})
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{img['mime']};base64,{img['b64']}",
+                        "detail": img.get("detail", image_detail),
+                    },
+                }
+            )
+        user_content = parts
+    else:
+        user_content = prompt_text
+
     messages = [
         {
             "role": "system",
             "content": (
-                "Extract fields from document text into JSON. "
+                "Extract fields from document text and any attached figures into JSON. "
                 "Use null when a field is missing or unreadable. "
                 "Do not invent values. Prefer null over a guess. "
                 "List dotted field paths you are not confident about in uncertain_fields."
             ),
         },
-        {
-            "role": "user",
-            "content": (
-                "Target schema for data:\n"
-                f"{json.dumps(schema, indent=2)}\n\n"
-                "Document text:\n"
-                f"{cleaned}"
-            ),
-        },
+        {"role": "user", "content": user_content},
     ]
     resp = client.chat.completions.create(
         model=model_name,
@@ -160,6 +185,7 @@ def structure(
         "data": data,
         "uncertain_fields": cleaned_uncertain,
         "token_usage": token_usage,
+        "vision_images": len(images or []),
     }
 
 

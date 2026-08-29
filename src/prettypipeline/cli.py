@@ -1,4 +1,4 @@
-"""CLI: prettypipeline run | batch"""
+"""CLI: prettypipeline run | batch | export"""
 
 from __future__ import annotations
 
@@ -7,34 +7,37 @@ import json
 import sys
 from pathlib import Path
 
+from prettypipeline.export import EXPORT_FORMATS, write_export
 from prettypipeline.pipeline import run
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="prettypipeline",
-        description="PDF → local OCR → cheap LLM JSON extraction.",
+        description="PDF → text/figures → GPT-5.4 → JSON + training exports.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    run_p = sub.add_parser("run", help="OCR a PDF and extract JSON using a schema")
+    run_p = sub.add_parser("run", help="Extract JSON from a PDF using a schema")
     _add_run_args(run_p)
     run_p.add_argument("pdf", type=Path)
 
     batch_p = sub.add_parser("batch", help="Process multiple PDFs with one schema")
     _add_run_args(batch_p)
     batch_p.add_argument("pdfs", nargs="+", type=Path, help="PDF files or directories")
-    batch_p.add_argument(
-        "--output-dir",
-        type=Path,
+    batch_p.add_argument("--output-dir", type=Path, required=True)
+    batch_p.add_argument("--summary", type=Path)
+
+    export_p = sub.add_parser("export", help="Convert a result JSON to CSV / fine-tuning formats")
+    export_p.add_argument("result", type=Path, help="prettypipeline JSON output")
+    export_p.add_argument("--schema", type=Path, required=True)
+    export_p.add_argument(
+        "--format",
         required=True,
-        help="Write one JSON file per PDF here",
+        choices=EXPORT_FORMATS,
+        help="csv | alpaca | sharegpt | openai | qa",
     )
-    batch_p.add_argument(
-        "--summary",
-        type=Path,
-        help="Optional path for batch summary JSON",
-    )
+    export_p.add_argument("-o", "--output", type=Path, required=True)
 
     args = p.parse_args(argv)
 
@@ -42,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_one(args)
     if args.cmd == "batch":
         return _run_batch(args)
+    if args.cmd == "export":
+        return _run_export(args)
     p.print_help()
     return 2
 
@@ -50,18 +55,25 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--schema", type=Path, required=True)
     p.add_argument("-o", "--output", type=Path, help="Write JSON here (also printed)")
     p.add_argument("--ocr-only", action="store_true", help="Skip the cloud structuring step")
-    p.add_argument("--force-ocr", action="store_true", help="Always OCR, skip embedded PDF text")
-    p.add_argument("--include-ocr-text", action="store_true", help="Include raw OCR/text in output")
-    p.add_argument("--device", choices=("cuda", "mps", "cpu"), default="", help="Override auto device")
-    p.add_argument("--dpi", type=int, default=300)
+    p.add_argument("--force-ocr", action="store_true", help="Always OCR text, skip embedded PDF text")
+    p.add_argument("--no-vision", action="store_true", help="Do not send segregated figures to GPT")
     p.add_argument(
-        "--max-length",
-        type=int,
-        default=None,
-        help="OCR generation cap (default: 8192 on MPS, 32768 on CUDA/CPU)",
+        "--image-detail",
+        choices=("low", "auto", "high"),
+        default="low",
+        help="GPT vision detail for figures (default: low — saves tokens)",
     )
-    p.add_argument("--model", default="", help="LLM model (default: gpt-5.4-nano or PRETTYPIPELINE_MODEL)")
-    p.add_argument("--base-url", default="", help="OpenAI-compatible API base URL")
+    p.add_argument("--include-ocr-text", action="store_true", help="Include raw text in output")
+    p.add_argument(
+        "--export",
+        default="",
+        help=f"Comma-separated exports: {','.join(EXPORT_FORMATS)}",
+    )
+    p.add_argument("--device", choices=("cuda", "mps", "cpu"), default="")
+    p.add_argument("--dpi", type=int, default=300)
+    p.add_argument("--max-length", type=int, default=None)
+    p.add_argument("--model", default="")
+    p.add_argument("--base-url", default="")
 
 
 def _run_kwargs(args) -> dict:
@@ -71,8 +83,10 @@ def _run_kwargs(args) -> dict:
     max_length = args.max_length if args.max_length is not None else default_max_length(args.device)
     print(f"device: {device}", file=sys.stderr)
 
-    kw = {
+    kw: dict = {
         "force_ocr": args.force_ocr,
+        "use_vision": not args.no_vision,
+        "image_detail": args.image_detail,
         "dpi": args.dpi,
         "device": args.device,
         "max_length": max_length,
@@ -83,6 +97,8 @@ def _run_kwargs(args) -> dict:
         kw["model"] = args.model
     if args.base_url:
         kw["base_url"] = args.base_url
+    if getattr(args, "export", ""):
+        kw["export_formats"] = [x.strip() for x in args.export.split(",") if x.strip()]
     return kw
 
 
@@ -92,8 +108,13 @@ def _run_one(args) -> int:
         return 2
     schema = json.loads(args.schema.read_text())
     kw = _run_kwargs(args)
+    if kw.get("export_formats") and args.output:
+        kw["export_stem"] = args.output
     result = run(args.pdf, schema, **kw)
-    print(f"text source: {result.source}", file=sys.stderr)
+    print(
+        f"text source: {result.source} | vision figures: {result.meta.get('vision_images', 0)}",
+        file=sys.stderr,
+    )
     _emit(result.to_dict(include_ocr_text=args.include_ocr_text), args.output)
     return 0
 
@@ -120,11 +141,21 @@ def _run_batch(args) -> int:
     summary = {"ok": [], "failed": []}
     for pdf in pdfs:
         out_path = args.output_dir / f"{pdf.stem}.json"
+        batch_kw = dict(kw)
+        if batch_kw.get("export_formats"):
+            batch_kw["export_stem"] = out_path
         try:
-            result = run(pdf, schema, **kw)
+            result = run(pdf, schema, **batch_kw)
             blob = json.dumps(result.to_dict(include_ocr_text=args.include_ocr_text), indent=2, ensure_ascii=False)
             out_path.write_text(blob + "\n")
-            summary["ok"].append({"file": str(pdf), "output": str(out_path), "source": result.source})
+            summary["ok"].append(
+                {
+                    "file": str(pdf),
+                    "output": str(out_path),
+                    "source": result.source,
+                    "vision_images": result.meta.get("vision_images", 0),
+                }
+            )
             print(f"ok {pdf.name} → {out_path}", file=sys.stderr)
         except SystemExit as e:
             summary["failed"].append({"file": str(pdf), "error": str(e)})
@@ -137,6 +168,19 @@ def _run_batch(args) -> int:
         args.summary.parent.mkdir(parents=True, exist_ok=True)
         args.summary.write_text(json.dumps(summary, indent=2) + "\n")
     return 0 if not summary["failed"] else 1
+
+
+def _run_export(args) -> int:
+    payload = json.loads(args.result.read_text())
+    schema = json.loads(args.schema.read_text())
+    data = payload.get("data")
+    if data is None:
+        print("result has no data field", file=sys.stderr)
+        return 2
+    source_text = payload.get("ocr_text", "")
+    write_export(args.format, args.output, schema=schema, data=data, source_text=source_text)
+    print(f"wrote {args.output}", file=sys.stderr)
+    return 0
 
 
 def _emit(result: dict, output: Path | None) -> None:

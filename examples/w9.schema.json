@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "W9",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "form_name": { "type": ["string", "null"] },
+    "form_number": { "type": ["string", "null"] },
+    "revision_date": { "type": ["string", "null"] },
+    "purpose": { "type": ["string", "null"] }
+  },
+  "required": ["form_name"]
+}

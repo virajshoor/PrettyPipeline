@@ -4,90 +4,134 @@
 [![Python](https://img.shields.io/pypi/pyversions/prettypipeline-ocr.svg)](https://pypi.org/project/prettypipeline-ocr/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Turn PDFs into structured JSON. OCR runs on **your GPU** when needed. Field extraction uses a **cheap cloud LLM**. You define the schema.
+Turn PDFs into structured JSON. Text comes from embedded PDF content or local OCR. **Figures are segregated and sent directly to GPT-5.4** — never the whole PDF as one image. Export to CSV and common LLM fine-tuning formats.
+
+## Architecture
 
 ```
-PDF  →  embedded text (digital PDFs) or Unlimited-OCR (scans)
-                              ↓
-        GPT-5.4 nano (OpenAI)  →  JSON + needs_review + _meta
+                         ┌─────────────────────────────────────┐
+                         │              PDF input              │
+                         └─────────────────┬───────────────────┘
+                                           │
+              ┌────────────────────────────┼────────────────────────────┐
+              │                            │                            │
+              ▼                            ▼                            ▼
+     ┌────────────────┐         ┌──────────────────┐         ┌──────────────────┐
+     │ Embedded text  │         │ Embedded figures │         │ Scan-only pages  │
+     │ (digital PDF)  │         │ (PyMuPDF crop)   │         │ (low-res fallback│
+     └───────┬────────┘         └────────┬─────────┘         │  120 DPI max)    │
+             │                           │                   └────────┬─────────┘
+             │                           │                            │
+             │              ┌────────────┴────────────┐               │
+             │              │  NOT full-page images   │               │
+             │              │  detail=low by default  │               │
+             │              └────────────┬────────────┘               │
+             │                           │                            │
+             └───────────────────────────┼────────────────────────────┘
+                                         │
+                                         ▼
+                            ┌────────────────────────┐
+                            │   GPT-5.4 nano (cloud) │
+                            │   text + figure images │
+                            │   strict JSON schema   │
+                            └───────────┬────────────┘
+                                        │
+                    ┌───────────────────┼───────────────────┐
+                    ▼                   ▼                   ▼
+              ┌──────────┐      ┌─────────────┐    ┌──────────────┐
+              │   JSON   │      │ needs_review│    │ Export formats│
+              │  + _meta │      │   flags     │    │ csv alpaca   │
+              └──────────┘      └─────────────┘    │ sharegpt qa  │
+                                                   │ openai jsonl │
+                                                   └──────────────┘
+
+Local OCR (Unlimited-OCR) only when a page has no usable embedded text
+and `--force-ocr` is set or hybrid routing needs it. Requires `[ocr]` extra.
 ```
 
 ## Why this is cheap
 
-Cloud OCR APIs charge per page. PrettyPipeline does vision work locally with [baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) (MIT, 3B params, 32K context) when a page has no usable embedded text.
-
-The only paid call is [GPT-5.4 nano](https://developers.openai.com/api/docs/models/gpt-5.4-nano) on document text (~$0.20 / 1M input tokens), prompted with **your** JSON schema.
-
-**Digital PDFs** use embedded text automatically (fast, accurate). OCR runs per-page only for scans, or for everything with `--force-ocr`.
-
-Nulls, uncertain fields, values not found in source text, and garbled OCR are flagged in `needs_review` (one reason per field).
+- **Digital PDFs** — embedded text is free and accurate; no GPU needed.
+- **Figures only** — segregated embedded images go to GPT vision at `detail=low` (not full-page raster).
+- **Local OCR** — [baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) for scan pages only (`pip install prettypipeline-ocr[ocr]`).
+- **GPT-5.4 nano** — ~$0.20 / 1M input tokens for structuring ([pricing](https://developers.openai.com/api/docs/models/gpt-5.4-nano)).
 
 ## Install
 
 Python **3.10–3.13** (3.12 recommended).
 
-**Digital PDFs only** (no local OCR, smallest install):
-
 ```bash
+# Digital PDFs + GPT vision (smallest install)
 pip install prettypipeline-ocr
-```
 
-**Full install** (local OCR for scans and `--force-ocr`):
-
-```bash
+# + local OCR for scans
 pip install prettypipeline-ocr[ocr]
 ```
 
-The CLI is `prettypipeline`. From this repo:
+From this repo:
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[ocr,dev]"
 ```
 
-**NVIDIA Linux** — install a CUDA PyTorch wheel first if needed:
+**NVIDIA Linux:**
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 pip install prettypipeline-ocr[ocr]
 ```
 
-The first OCR run downloads `baidu/Unlimited-OCR` from Hugging Face (~6GB).
-
-**Docker (CUDA):**
-
-```bash
-docker build -f Dockerfile.cuda -t prettypipeline:cuda .
-docker run --gpus all -e OPENAI_API_KEY=sk-... \
-  -v "$PWD/data:/data" prettypipeline:cuda \
-  run /data/invoice.pdf --schema /data/schema.json -o /data/out.json
-```
+**Docker (CUDA):** see `Dockerfile.cuda`.
 
 ## Quick start
 
 ```bash
 export OPENAI_API_KEY=sk-...
 
+# Extract JSON (text + segregated figures → GPT)
 prettypipeline run invoice.pdf --schema examples/invoice.schema.json
-prettypipeline run invoice.pdf --schema examples/invoice.schema.json -o out.json
-prettypipeline run invoice.pdf --schema examples/invoice.schema.json --ocr-only
+
+# Also export fine-tuning formats
+prettypipeline run invoice.pdf --schema examples/invoice.schema.json \
+  -o out.json --export csv,alpaca,sharegpt,openai,qa
+
+# Convert existing JSON to a training file
+prettypipeline export out.json --schema examples/invoice.schema.json \
+  --format sharegpt -o train.jsonl
 ```
 
-Demo invoice in this repo:
+Demo invoice:
 
 ```bash
 prettypipeline run tests/fixtures/sample_invoice.pdf \
   --schema examples/invoice.schema.json -o out.json
 ```
 
-**Batch:**
+## Figure segregation (vision)
 
-```bash
-prettypipeline batch ./invoices/*.pdf \
-  --schema examples/invoice.schema.json \
-  --output-dir ./out/ \
-  --summary ./out/summary.json
-```
+PrettyPipeline **does not** rasterize entire PDF pages for GPT unless a page is scan-only with no embedded figures.
+
+| Page type | Text source | Vision sent to GPT |
+|---|---|---|
+| Digital + figures | Embedded PDF text | Embedded figures only (`detail=low`) |
+| Digital, no figures | Embedded PDF text | Nothing |
+| Scan, no figures | Local OCR or low-res page | One low-res page image (120 DPI) |
+| `--no-vision` | Same as above | Disabled |
+
+Images are **visual context only** — no CSV or table dump is generated from figures.
+
+## Export formats (LLM training)
+
+| Format | File | Use case |
+|---|---|---|
+| `csv` | `.csv` | Spreadsheets, flat field/value |
+| `alpaca` | `.alpaca.jsonl` | Instruction tuning (LLaMA-Factory, Axolotl) |
+| `sharegpt` | `.sharegpt.jsonl` | Multi-turn chat fine-tuning |
+| `openai` | `.openai.jsonl` | OpenAI fine-tuning `messages` format |
+| `qa` | `.qa.jsonl` | Simple question/answer pairs |
+
+ShareGPT and OpenAI JSONL are preferred for chat models in 2026; Alpaca for single-turn extraction tasks.
 
 ## Schema examples
 
@@ -97,99 +141,59 @@ prettypipeline batch ./invoices/*.pdf \
 | `examples/receipt.schema.json` | Receipts |
 | `examples/purchase_order.schema.json` | Purchase orders |
 
-`--schema` is any JSON Schema — swap the file to extract a different document type.
-
 ## CLI
 
 ```
 prettypipeline run FILE.pdf --schema SCHEMA.json
-  -o, --output PATH           write JSON (also printed)
-  --ocr-only                  skip OpenAI step
-  --force-ocr                 always OCR (skip embedded text)
-  --include-ocr-text          include raw text in output
-  --device cuda|mps|cpu       override auto-detect
-  --dpi N                     PDF raster DPI (default 300)
-  --max-length N              OCR cap (8192 MPS, 32768 CUDA/CPU)
-  --model NAME                LLM model (default gpt-5.4-nano)
-  --base-url URL              OpenAI-compatible API endpoint
+  -o, --output PATH           JSON output (also printed)
+  --export csv,alpaca,...     comma-separated training exports
+  --no-vision                 skip figure images to GPT
+  --image-detail low|auto|high  vision token budget (default: low)
+  --ocr-only                  skip GPT step
+  --force-ocr                 always OCR text locally
+  --model, --base-url         LLM settings
 
 prettypipeline batch FILES... --schema SCHEMA.json --output-dir DIR
-  --summary PATH              optional batch summary JSON
+prettypipeline export RESULT.json --schema SCHEMA.json --format FORMAT -o OUT
 ```
 
-Environment variables:
-
-| Variable | Purpose |
-|---|---|
-| `OPENAI_API_KEY` | Required unless `--ocr-only` |
-| `PRETTYPIPELINE_MODEL` | Default LLM model |
-| `PRETTYPIPELINE_BASE_URL` | OpenAI-compatible base URL |
+Environment: `OPENAI_API_KEY`, `PRETTYPIPELINE_MODEL`, `PRETTYPIPELINE_BASE_URL`.
 
 ## Output
 
 ```json
 {
-  "data": {
-    "date": "January 25, 2016",
-    "vendor": "DEMO - Sliced Invoices",
-    "invoice_number": "INV-3337",
-    "total": 93.5
-  },
+  "data": { "invoice_number": "INV-3337", "total": 93.5 },
   "needs_review": [],
   "source": "pdf_text",
   "_meta": {
-    "version": "0.3.0",
-    "elapsed_ms": 4200,
+    "version": "0.4.0",
+    "elapsed_ms": 3200,
     "pages": 1,
-    "device": "mps",
-    "model": "gpt-5.4-nano",
-    "token_usage": {
-      "prompt_tokens": 1200,
-      "completion_tokens": 180,
-      "total_tokens": 1380
-    }
+    "vision_images": 1,
+    "segments": { "text_chars": 842, "figures": 1 },
+    "token_usage": { "prompt_tokens": 1100, "completion_tokens": 95, "total_tokens": 1195 }
   }
 }
 ```
 
-| `source` | meaning |
-|---|---|
-| `pdf_text` | all pages used embedded text |
-| `ocr` | all pages OCR'd |
-| `mixed` | some pages embedded, some OCR |
-
-| `needs_review` reason | meaning |
-|---|---|
-| `null` | model returned null |
-| `uncertain` | model flagged low confidence |
-| `garbled_ocr` | value or nearby OCR looks corrupted |
-| `not_in_source` | value not found in document text |
-
 ## Programmatic use
 
 ```python
-from prettypipeline import run
+from prettypipeline import run, segment_pdf, to_csv
 
-result = run(
-    "invoice.pdf",
-    "examples/invoice.schema.json",
-)
-print(result.data)
-print(result.needs_review)
-print(result.meta)
+result = run("invoice.pdf", "examples/invoice.schema.json", export_formats=["alpaca"], export_stem=Path("out.json"))
+seg = segment_pdf("invoice.pdf")  # inspect text vs figures before calling GPT
 ```
-
-Lower-level imports: `extract_text`, `structure`, `needs_review`.
 
 ## Hardware
 
-| Device | Support |
+| Device | Role |
 |---|---|
-| NVIDIA CUDA | Native. Recommended for OCR. |
-| Apple Silicon (MPS) | Supported with CUDA-call patching. `--force-ocr` may produce garbled output; digital PDFs are unaffected. |
-| CPU | Works, slow. |
-
-On MPS, default `--max-length` is **8192** (input + generation). CUDA/CPU default is **32768**.
+| NVIDIA CUDA | Recommended for local OCR (`[ocr]` extra) |
+| Apple Silicon MPS | OCR supported; `--force-ocr` may degrade |
+| CPU | OCR works, slow |
+| None | Digital PDFs + GPT vision work without GPU |
 
 ## Development
 
@@ -203,4 +207,4 @@ python -m build && twine check dist/*
 
 MIT. [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) is also MIT.
 
-Sample invoice: [Sliced Invoices](https://slicedinvoices.com/pdf/wordpress-pdf-invoice-plugin-sample.pdf).
+Fixtures: [Sliced Invoices sample](https://slicedinvoices.com/pdf/wordpress-pdf-invoice-plugin-sample.pdf), [IRS Form W-9](https://www.irs.gov/pub/irs-pdf/fw9.pdf).
