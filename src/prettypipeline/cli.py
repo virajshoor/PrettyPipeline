@@ -79,8 +79,18 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--device", choices=("cuda", "mps", "cpu"), default="")
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--max-length", type=int, default=None)
-    p.add_argument("--model", default="")
-    p.add_argument("--base-url", default="")
+    p.add_argument("--model", default="", help="LLM model (OpenAI or Ollama)")
+    p.add_argument("--base-url", default="", help="OpenAI-compatible API base URL")
+    p.add_argument(
+        "--ollama",
+        action="store_true",
+        help="Use local Ollama server via /api/chat (WIP — may be buggy)",
+    )
+    p.add_argument(
+        "--ollama-host",
+        default="",
+        help="Ollama base URL (default: http://localhost:11434 or OLLAMA_HOST)",
+    )
 
 
 def _run_kwargs(args) -> dict:
@@ -105,6 +115,10 @@ def _run_kwargs(args) -> dict:
         kw["model"] = args.model
     if args.base_url:
         kw["base_url"] = args.base_url
+    if args.ollama:
+        kw["provider"] = "ollama"
+    if args.ollama_host:
+        kw["ollama_host"] = args.ollama_host
     if getattr(args, "export", ""):
         kw["export_formats"] = [x.strip() for x in args.export.split(",") if x.strip()]
     return kw
@@ -120,7 +134,8 @@ def _run_one(args) -> int:
         kw["export_stem"] = args.output
     result = run(args.pdf, schema, **kw)
     print(
-        f"text source: {result.source} | vision figures: {result.meta.get('vision_images', 0)}",
+        f"text source: {result.source} | vision figures: {result.meta.get('vision_images', 0)}"
+        + (f" | llm: {result.meta.get('llm_provider')}" if result.meta.get("llm_provider") else ""),
         file=sys.stderr,
     )
     _emit(result.to_dict(include_ocr_text=args.include_ocr_text), args.output)

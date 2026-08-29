@@ -24,7 +24,7 @@ def test_run_full_pipeline():
     assert result.data["invoice_number"] == "INV-3337"
     assert result.data["total"] == 93.5
     assert result.meta["pages"] == 1
-    assert result.meta["version"] == "0.4.1"
+    assert result.meta["version"] == "0.5.0"
     assert result.meta["token_usage"] is not None
 
 

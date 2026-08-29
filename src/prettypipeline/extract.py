@@ -25,13 +25,16 @@ _REASON_PRIORITY = {
 }
 
 
-def require_api_key() -> str:
+def require_api_key(*, provider: str = "openai") -> str:
+    if provider == "ollama":
+        return "ollama"
     key = os.environ.get(API_KEY_ENV, "").strip()
     if not key:
         raise SystemExit(
             f"{API_KEY_ENV} is not set. Export it, then re-run:\n"
             f"  export {API_KEY_ENV}=sk-...\n"
-            f"  prettypipeline run <file.pdf> --schema <schema.json>"
+            f"  prettypipeline run <file.pdf> --schema <schema.json>\n"
+            f"Or use local Ollama: prettypipeline run ... --ollama"
         )
     return key
 
@@ -107,7 +110,21 @@ def structure(
     base_url: str | None = None,
     images: list[dict[str, Any]] | None = None,
     image_detail: str = "low",
+    provider: str = "openai",
+    ollama_host: str | None = None,
 ) -> dict[str, Any]:
+    if provider == "ollama":
+        from prettypipeline.ollama import structure_ollama, warn_wip
+
+        warn_wip()
+        return structure_ollama(
+            source_text,
+            schema,
+            host=ollama_host,
+            model=model,
+            images=images,
+        )
+
     client = _openai_client(api_key, base_url)
     model_name = model or DEFAULT_MODEL
     cleaned = clean_ocr_output(source_text) if "<|det|>" in source_text or "<PAGE>" in source_text else source_text
@@ -186,6 +203,7 @@ def structure(
         "uncertain_fields": cleaned_uncertain,
         "token_usage": token_usage,
         "vision_images": len(images or []),
+        "llm_provider": "openai",
     }
 
 

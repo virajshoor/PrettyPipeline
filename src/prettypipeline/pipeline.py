@@ -54,6 +54,8 @@ def run(
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    provider: str = "openai",
+    ollama_host: str | None = None,
     include_ocr_text: bool = False,
     export_formats: list[str] | None = None,
     export_stem: Path | None = None,
@@ -68,7 +70,7 @@ def run(
     t0 = time.perf_counter()
     pages = count_pdf_pages(str(pdf_path))
     device_name_str = device_name(device)
-    model_name = model or DEFAULT_MODEL
+    model_name = model or (os.environ.get("OLLAMA_MODEL", "llama3.2-vision") if provider == "ollama" else DEFAULT_MODEL)
 
     segments = segment_pdf(str(pdf_path))
     text, source = extract_text(
@@ -88,6 +90,7 @@ def run(
         "pages": pages,
         "device": device_name_str,
         "model": model_name if not ocr_only else None,
+        "llm_provider": provider if not ocr_only else None,
         "token_usage": None,
         "vision_images": len(vision_images),
         "segments": {"text_chars": len(text), "figures": len(vision_images), "text_source": source},
@@ -103,7 +106,7 @@ def run(
             meta=meta,
         )
 
-    key = api_key or require_api_key()
+    key = api_key or require_api_key(provider=provider)
     extracted = structure(
         text,
         schema_obj,
@@ -112,6 +115,8 @@ def run(
         base_url=base_url or DEFAULT_BASE_URL,
         images=vision_images or None,
         image_detail=image_detail,
+        provider=provider,
+        ollama_host=ollama_host,
     )
     flags = needs_review(extracted["data"], text, extracted["uncertain_fields"])
     meta["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)

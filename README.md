@@ -1,6 +1,6 @@
 # PrettyPipeline
 
-<!-- version: 0.4.1 -->
+<!-- version: 0.5.0 -->
 
 <p align="left">
   <img
@@ -14,7 +14,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/prettypipeline-ocr.svg)](https://pypi.org/project/prettypipeline-ocr/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Latest release: [v0.4.1](https://pypi.org/project/prettypipeline-ocr/0.4.1/)** · Requires `pip install prettypipeline-ocr` (add `[ocr]` for Baidu OCR)
+**Latest release: [v0.5.0](https://pypi.org/project/prettypipeline-ocr/0.5.0/)** · Requires `pip install prettypipeline-ocr` (add `[ocr]` for Baidu OCR)
 
 Turn PDFs into structured JSON. Text comes from embedded PDF content or local OCR. **Figures are segregated and sent directly to GPT-5.4** — never the whole PDF as one image. Export to CSV and common LLM fine-tuning formats.
 
@@ -141,6 +141,30 @@ PrettyPipeline **does not** rasterize entire PDF pages for GPT unless a page is 
 
 Images are **visual context only** — no CSV or table dump is generated from figures.
 
+## Local Ollama (WIP)
+
+Run structuring against a local [Ollama](https://ollama.com) server — no OpenAI key required.
+
+```bash
+ollama serve
+ollama pull llama3.2-vision   # or llava, gemma3, etc.
+
+prettypipeline run invoice.pdf --schema examples/invoice.schema.json --ollama
+prettypipeline run invoice.pdf --schema examples/invoice.schema.json \
+  --ollama --ollama-host http://localhost:11434 --model llama3.2-vision
+```
+
+**How it works** (per [Ollama vision docs](https://docs.ollama.com/capabilities/vision)):
+- Native `/api/chat` endpoint (not experimental OpenAI shim for images)
+- Figures sent as **raw base64** in the message `images[]` array (official REST format)
+- Structured JSON via Ollama `format` JSON schema ([structured outputs](https://docs.ollama.com/capabilities/structured-outputs))
+
+This backend is **WIP** — schema enforcement and vision quality vary by model. Use a vision-capable model.
+
+Environment: `OLLAMA_HOST` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `llama3.2-vision`).
+
+You can also point `--base-url http://localhost:11434/v1` at Ollama's OpenAI-compatible API with `--model llama3.2`, but vision images must be base64 data URIs there; the native `--ollama` path is recommended.
+
 ## Export formats (LLM training)
 
 | Format | File | Use case |
@@ -171,13 +195,15 @@ prettypipeline run FILE.pdf --schema SCHEMA.json
   --image-detail low|auto|high  vision token budget (default: low)
   --embedded-only             skip Baidu OCR supplement (embedded text only)
   --force-ocr                 OCR only — ignore embedded text
-  --model, --base-url         LLM settings
+  --model, --base-url         OpenAI LLM settings
+  --ollama                    local Ollama /api/chat (WIP)
+  --ollama-host URL           Ollama server (default localhost:11434)
 
 prettypipeline batch FILES... --schema SCHEMA.json --output-dir DIR
 prettypipeline export RESULT.json --schema SCHEMA.json --format FORMAT -o OUT
 ```
 
-Environment: `OPENAI_API_KEY`, `PRETTYPIPELINE_MODEL`, `PRETTYPIPELINE_BASE_URL`.
+Environment: `OPENAI_API_KEY`, `PRETTYPIPELINE_MODEL`, `PRETTYPIPELINE_BASE_URL`, `OLLAMA_HOST`, `OLLAMA_MODEL`.
 
 ## Output
 
@@ -187,7 +213,7 @@ Environment: `OPENAI_API_KEY`, `PRETTYPIPELINE_MODEL`, `PRETTYPIPELINE_BASE_URL`
   "needs_review": [],
   "source": "pdf_text",
   "_meta": {
-    "version": "0.4.1",
+    "version": "0.5.0",
     "elapsed_ms": 3200,
     "pages": 1,
     "vision_images": 1,
