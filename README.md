@@ -2,6 +2,14 @@
 
 <!-- version: 0.4.1 -->
 
+<p align="left">
+  <img
+    src="https://raw.githubusercontent.com/virajshoor/PrettyPipeline/main/docs/logo.jpg"
+    alt="PrettyPipeline — PDF, JSON, and CSV through a pipeline into OCR"
+    width="372"
+  />
+</p>
+
 [![PyPI](https://img.shields.io/pypi/v/prettypipeline-ocr.svg)](https://pypi.org/project/prettypipeline-ocr/)
 [![Python](https://img.shields.io/pypi/pyversions/prettypipeline-ocr.svg)](https://pypi.org/project/prettypipeline-ocr/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

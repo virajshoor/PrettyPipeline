@@ -9,12 +9,14 @@ from pathlib import Path
 
 from prettypipeline.export import EXPORT_FORMATS, write_export
 from prettypipeline.pipeline import run
+from prettypipeline.branding import PROJECT_HOME
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="prettypipeline",
         description="PDF → text/figures → GPT-5.4 → JSON + training exports.",
+        epilog=f"PrettyPipeline · {PROJECT_HOME}",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 

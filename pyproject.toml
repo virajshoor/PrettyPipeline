@@ -59,6 +59,9 @@ PyPI = "https://pypi.org/project/prettypipeline-ocr/"
 [project.scripts]
 prettypipeline = "prettypipeline.cli:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

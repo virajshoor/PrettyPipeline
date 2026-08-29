@@ -22,6 +22,19 @@ def _readme_version() -> str:
     return m.group(1)
 
 
+def test_logo_asset_present():
+    logo = ROOT / "docs" / "logo.jpg"
+    assert logo.is_file()
+    # Native artboard — keep tall aspect; README displays at width=372 only (no height cap).
+    try:
+        from PIL import Image
+
+        w, h = Image.open(logo).size
+        assert w == 372 and h == 1024
+    except ImportError:
+        assert logo.stat().st_size > 10_000
+
+
 def test_version_sync():
     from prettypipeline import __version__
 
