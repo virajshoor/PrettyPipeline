@@ -9,6 +9,8 @@ from typing import Any
 
 from openai import OpenAI
 
+from prettypipeline.ocr import clean_ocr_output
+
 MODEL = "gpt-5.4-nano"
 API_KEY_ENV = "OPENAI_API_KEY"
 
@@ -26,39 +28,90 @@ def require_api_key() -> str:
     return key
 
 
-def _clean_ocr(ocr_text: str) -> str:
-    text = re.sub(r"<\|det\|>.*?<\|/det\|>", " ", ocr_text, flags=re.DOTALL)
-    return re.sub(r"<PAGE>", "\n", text)
+def _normalize(s: str) -> str:
+    return re.sub(r"\s+", " ", s.lower().strip())
 
 
-def structure(ocr_text: str, schema: dict[str, Any], api_key: str | None = None) -> dict[str, Any]:
+def _in_source(value: str, source_text: str) -> bool:
+    if not value or not source_text:
+        return False
+    needle = _normalize(str(value))
+    if len(needle) < 3:
+        return True
+    hay = _normalize(source_text)
+    if needle in hay:
+        return True
+    # allow partial match for long strings (addresses, descriptions)
+    if len(needle) >= 12:
+        words = [w for w in needle.split() if len(w) >= 3]
+        if words and sum(1 for w in words if w in hay) / len(words) >= 0.6:
+            return True
+    return False
+
+
+def _make_strict(obj: dict[str, Any]) -> dict[str, Any]:
+    """OpenAI strict mode requires every property key in required."""
+    out = dict(obj)
+    if out.get("type") == "object" and "properties" in out:
+        props = out["properties"]
+        out["additionalProperties"] = False
+        out["required"] = list(props.keys())
+        out["properties"] = {k: _make_strict(v) if isinstance(v, dict) else v for k, v in props.items()}
+    if out.get("type") == "array" and isinstance(out.get("items"), dict):
+        out["items"] = _make_strict(out["items"])
+    return out
+
+
+def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    strict = _make_strict(schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": re.sub(r"[^A-Za-z0-9_]", "_", schema.get("title", "extract"))[:64] or "extract",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "data": strict,
+                    "uncertain_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["data", "uncertain_fields"],
+            },
+        },
+    }
+
+
+def structure(source_text: str, schema: dict[str, Any], api_key: str | None = None) -> dict[str, Any]:
     client = OpenAI(api_key=api_key or require_api_key())
+    cleaned = clean_ocr_output(source_text) if "<|det|>" in source_text or "<PAGE>" in source_text else source_text
     messages = [
         {
             "role": "system",
             "content": (
-                "Extract fields from OCR text into JSON. "
-                "Return exactly: {\"data\": <object matching the schema>, "
-                "\"uncertain_fields\": [<dotted paths you are not confident about>]}. "
-                "Use null when a required or optional field is missing or unreadable. "
+                "Extract fields from document text into JSON. "
+                "Use null when a field is missing or unreadable. "
                 "Do not invent values. Prefer null over a guess. "
-                "Ignore repeated garbage tokens from OCR degeneration."
+                "List dotted field paths you are not confident about in uncertain_fields."
             ),
         },
         {
             "role": "user",
             "content": (
-                "JSON schema (target shape for data):\n"
+                "Target schema for data:\n"
                 f"{json.dumps(schema, indent=2)}\n\n"
-                "OCR text:\n"
-                f"{_clean_ocr(ocr_text)}"
+                "Document text:\n"
+                f"{cleaned}"
             ),
         },
     ]
     resp = client.chat.completions.create(
         model=MODEL,
         messages=messages,
-        response_format={"type": "json_object"},
+        response_format=_strict_schema(schema),
     )
     raw = resp.choices[0].message.content or "{}"
     parsed = json.loads(raw)
@@ -116,7 +169,7 @@ def ocr_near_field_garbled(ocr_text: str, value: str) -> bool:
 
 def needs_review(
     data: Any,
-    ocr_text: str = "",
+    source_text: str = "",
     uncertain: list[str] | None = None,
 ) -> list[dict[str, str]]:
     flags: list[dict[str, str]] = []
@@ -133,6 +186,11 @@ def needs_review(
     for path, value in _walk(data):
         if value is None:
             add(path, "null")
-        elif isinstance(value, str) and (looks_garbled(value) or ocr_near_field_garbled(ocr_text, value)):
-            add(path, "garbled_ocr")
+        elif isinstance(value, str):
+            if looks_garbled(value) or ocr_near_field_garbled(source_text, value):
+                add(path, "garbled_ocr")
+            elif not _in_source(value, source_text):
+                add(path, "not_in_source")
+        elif isinstance(value, (int, float)) and not _in_source(str(value), source_text):
+            add(path, "not_in_source")
     return flags

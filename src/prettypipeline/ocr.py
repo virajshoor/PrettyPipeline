@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 from functools import lru_cache
@@ -12,6 +13,7 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 
 MODEL_ID = "baidu/Unlimited-OCR"
+MPS_DEFAULT_MAX_LENGTH = 2048
 
 
 def pick_device(explicit: str | None = None) -> torch.device:
@@ -22,6 +24,11 @@ def pick_device(explicit: str | None = None) -> torch.device:
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def default_max_length(device: str = "") -> int:
+    dev = pick_device(device or None)
+    return MPS_DEFAULT_MAX_LENGTH if dev.type == "mps" else 32768
 
 
 def _patch_cuda_calls(device: torch.device) -> None:
@@ -63,6 +70,41 @@ def _dtype_for(device: torch.device) -> torch.dtype:
     return torch.float32
 
 
+def extract_pdf_text(pdf_path: str) -> str:
+    doc = fitz.open(pdf_path)
+    try:
+        return "\n\n".join(page.get_text().strip() for page in doc if page.get_text().strip())
+    finally:
+        doc.close()
+
+
+def looks_like_digital_pdf(text: str) -> bool:
+    if len(text) < 40:
+        return False
+    alnum = sum(c.isalnum() for c in text)
+    return alnum / max(len(text), 1) >= 0.35
+
+
+def cut_repetition(text: str) -> str:
+    """Stop at the first long repeat — Unlimited-OCR can loop on MPS."""
+    m = re.search(r"(.)\1{7,}", text)
+    if m:
+        text = text[: m.start()]
+    words = text.split()
+    if len(words) >= 8:
+        for n in range(4, 1, -1):
+            if len(words) >= n * 3 and words[-n:] == words[-2 * n : -n]:
+                text = " ".join(words[: -n])
+                break
+    return text.strip()
+
+
+def clean_ocr_output(text: str) -> str:
+    text = re.sub(r"<\|det\|>.*?<\|/det\|>", " ", text, flags=re.DOTALL)
+    text = re.sub(r"<PAGE>", "\n", text)
+    return cut_repetition(text)
+
+
 def pdf_to_images(pdf_path: str, dpi: int = 300) -> tuple[list[str], str]:
     """Rasterize PDF pages the way Unlimited-OCR documents: PyMuPDF at `dpi`."""
     tmp_dir = tempfile.mkdtemp(prefix="pdf_ocr_")
@@ -102,19 +144,23 @@ def load_model(device_str: str = "") -> tuple[object, object, torch.device]:
     return model, tokenizer, device
 
 
-def ocr_pdf(
-    pdf_path: str,
-    dpi: int = 300,
-    device: str = "",
-    output_dir: str | None = None,
-    max_length: int = 32768,
-) -> str:
-    model, tokenizer, _ = load_model(device)
-    paths, tmp_dir = pdf_to_images(pdf_path, dpi=dpi)
-    out = output_dir or tempfile.mkdtemp(prefix="ocr_out_")
-    own_out = output_dir is None
-    try:
-        text, _tokens = model.infer_multi(
+def _run_ocr(model, tokenizer, paths: list[str], out: str, max_length: int) -> str:
+    if len(paths) == 1:
+        text, _ = model.infer(
+            tokenizer,
+            prompt="<image>document parsing.",
+            image_file=paths[0],
+            output_path=out,
+            base_size=1024,
+            image_size=640,
+            crop_mode=True,
+            max_length=max_length,
+            no_repeat_ngram_size=35,
+            ngram_window=128,
+            save_results=False,
+        )
+    else:
+        text, _ = model.infer_multi(
             tokenizer,
             prompt="<image>Multi page parsing.",
             image_files=paths,
@@ -125,8 +171,41 @@ def ocr_pdf(
             ngram_window=1024,
             save_results=False,
         )
-        return text
+    return clean_ocr_output(text)
+
+
+def ocr_pdf(
+    pdf_path: str,
+    dpi: int = 300,
+    device: str = "",
+    output_dir: str | None = None,
+    max_length: int | None = None,
+) -> str:
+    model, tokenizer, _ = load_model(device)
+    if max_length is None:
+        max_length = default_max_length(device)
+    paths, tmp_dir = pdf_to_images(pdf_path, dpi=dpi)
+    out = output_dir or tempfile.mkdtemp(prefix="ocr_out_")
+    own_out = output_dir is None
+    try:
+        return _run_ocr(model, tokenizer, paths, out, max_length)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         if own_out:
             shutil.rmtree(out, ignore_errors=True)
+
+
+def extract_text(
+    pdf_path: str,
+    *,
+    force_ocr: bool = False,
+    dpi: int = 300,
+    device: str = "",
+    max_length: int | None = None,
+) -> tuple[str, str]:
+    """Return (text, source) where source is 'pdf_text' or 'ocr'."""
+    if not force_ocr:
+        embedded = extract_pdf_text(pdf_path)
+        if looks_like_digital_pdf(embedded):
+            return embedded, "pdf_text"
+    return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"

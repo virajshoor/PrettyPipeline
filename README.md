@@ -18,7 +18,9 @@ Cloud OCR APIs charge per page. PrettyPipeline does the expensive vision work lo
 
 The only paid call is [GPT-5.4 nano](https://developers.openai.com/api/docs/models/gpt-5.4-nano) on that text (~$0.20 / 1M input tokens), prompted with **your** JSON schema. You pay for a small text completion, not for pixels.
 
-Nulls, model-marked uncertain fields, and OCR that looks garbled are flagged in `needs_review` instead of being silently accepted.
+Nulls, model-marked uncertain fields, values not found in the source text, and OCR that looks garbled are flagged in `needs_review` instead of being silently accepted.
+
+**Digital PDFs** — embedded text is used when available (fast, accurate). OCR runs only for scans or with `--force-ocr`.
 
 ## Install
 
@@ -59,11 +61,10 @@ Demo invoice in this repo:
 
 ```bash
 prettypipeline run tests/fixtures/sample_invoice.pdf \
-  --schema examples/invoice.schema.json \
-  --device mps --max-length 2048 -o out.json
+  --schema examples/invoice.schema.json -o out.json
 ```
 
-(`--device cuda` on NVIDIA. Drop `--ocr-only` once `OPENAI_API_KEY` is set.)
+Digital PDFs use embedded text automatically. Use `--force-ocr` to always run Unlimited-OCR.
 
 ## Schema
 
@@ -98,9 +99,10 @@ See `examples/invoice.schema.json` for a fuller invoice example.
 prettypipeline run FILE.pdf --schema SCHEMA.json
   -o, --output PATH     write JSON to a file (also printed)
   --ocr-only            skip the OpenAI step
+  --force-ocr           always OCR, skip embedded PDF text
   --device cuda|mps|cpu override auto-detect (cuda → mps → cpu)
   --dpi N               PDF raster DPI (default 300)
-  --max-length N        OCR generation cap (default 32768)
+  --max-length N        OCR cap (default 2048 on MPS, 32768 on CUDA/CPU)
 ```
 
 `OPENAI_API_KEY` is required unless you pass `--ocr-only`. It is never hardcoded.
@@ -128,7 +130,7 @@ prettypipeline run FILE.pdf --schema SCHEMA.json
 |---|---|
 | `null` | model returned null |
 | `uncertain` | model marked the field as a guess |
-| `garbled_ocr` | extracted text (or nearby OCR) looks corrupted |
+| `not_in_source` | extracted value not found in document text |
 
 ## Hardware
 
