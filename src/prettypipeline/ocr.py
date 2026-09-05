@@ -327,11 +327,113 @@ def _warn_mps_ocr(device: str, *, context: str) -> None:
         )
 
 
+def fill_scan_text(
+    pdf_path: str,
+    segments,
+    *,
+    dpi: int = 300,
+    device: str = "",
+    max_length: int | None = None,
+) -> int:
+    """
+    OCR only the scan pages of an already-segmented PDF, filling
+    ``segments.page_texts`` in place. Returns the number of pages OCR'd.
+
+    Digital pages are never touched — their embedded text is free and accurate.
+    """
+    scan = [i for i, kind in enumerate(segments.page_kinds) if kind == "scan"]
+    if not scan:
+        return 0
+
+    try:
+        _require_ocr_deps()
+    except SystemExit:
+        if segments.text.strip():
+            print(
+                f"note: install prettypipeline-ocr[ocr] to OCR {len(scan)} scan page(s); "
+                "using embedded text only",
+                file=sys.stderr,
+            )
+            return 0
+        raise SystemExit(
+            "No embedded text found and OCR dependencies missing.\n"
+            "  pip install prettypipeline-ocr[ocr]"
+        ) from None
+
+    _warn_mps_ocr(device, context="scan-page OCR")
+    if max_length is None:
+        max_length = default_max_length(device)
+
+    model = tokenizer = None
+    doc = fitz.open(pdf_path)
+    tmp_dir = tempfile.mkdtemp(prefix="pdf_scan_")
+    filled = 0
+    try:
+        multi_page = segments.pages > 1
+        for i in scan:
+            if model is None:
+                model, tokenizer, _ = load_model(device)
+            img_path = _rasterize_page(doc[i], dpi, tmp_dir, i)
+            try:
+                page_text = _ocr_page_image(model, tokenizer, img_path, max_length)
+            except Exception as exc:
+                print(f"warning: OCR failed on page {i + 1} ({exc})", file=sys.stderr)
+                continue
+            if page_text.strip():
+                if multi_page:
+                    page_text = f"--- Page {i + 1} ---\n{page_text}"
+                segments.page_texts[i] = page_text
+                filled += 1
+    finally:
+        doc.close()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return filled
+
+
+def ocr_supplement_text(
+    pdf_path: str,
+    text: str,
+    *,
+    dpi: int = 300,
+    device: str = "",
+    max_length: int | None = None,
+) -> tuple[str, bool]:
+    """
+    Merge full-document Baidu OCR into `text` (catches stamps, signatures,
+    text inside figures). Returns (merged_text, added_anything).
+    """
+    try:
+        _require_ocr_deps()
+    except SystemExit:
+        print(
+            "note: install prettypipeline-ocr[ocr] for Baidu OCR text supplement",
+            file=sys.stderr,
+        )
+        return text, False
+
+    _warn_mps_ocr(device, context="OCR supplement")
+    try:
+        ocr_text = ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length)
+    except Exception as exc:
+        print(f"warning: Baidu OCR failed ({exc}); using embedded text only", file=sys.stderr)
+        return text, False
+
+    if not ocr_text.strip():
+        return text, False
+    if not text.strip():
+        return ocr_text, True
+    merged = merge_texts(text, ocr_text)
+    if merged == text.strip():
+        return text, False
+    return merged, True
+
+
 def extract_text(
     pdf_path: str,
     *,
     force_ocr: bool = False,
     embedded_only: bool = False,
+    ocr_supplement: bool = False,
     dpi: int = 300,
     device: str = "",
     max_length: int | None = None,
@@ -339,109 +441,25 @@ def extract_text(
     """
     Return (text, source).
 
-    Default: embedded text + full-document Baidu OCR merged for complete coverage.
+    Default: embedded text plus OCR for scan-only pages.
     force_ocr: OCR only, ignore embedded text.
-    embedded_only: embedded / per-page hybrid without Baidu OCR supplement.
+    embedded_only: embedded text only — never loads the OCR model.
+    ocr_supplement: also merge full-document OCR (stamps, image text).
     """
-    if max_length is None:
-        max_length = default_max_length(device)
-
     if force_ocr:
         _warn_mps_ocr(device, context="--force-ocr")
         return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"
 
-    embedded = extract_pdf_text(pdf_path)
-    has_embedded = bool(embedded.strip())
+    from prettypipeline.segments import segment_pdf
 
-    if embedded_only:
-        return _extract_embedded_hybrid(
-            pdf_path,
-            dpi=dpi,
-            device=device,
-            max_length=max_length,
+    segments = segment_pdf(pdf_path)
+    if not embedded_only:
+        fill_scan_text(pdf_path, segments, dpi=dpi, device=device, max_length=max_length)
+    text, source = segments.text, segments.source
+    if ocr_supplement and not embedded_only:
+        text, added = ocr_supplement_text(
+            pdf_path, text, dpi=dpi, device=device, max_length=max_length
         )
-
-    # --- Default: supplement with Baidu OCR for complete text ---
-    try:
-        _require_ocr_deps()
-    except SystemExit:
-        if has_embedded:
-            print(
-                "note: install prettypipeline-ocr[ocr] for Baidu OCR text supplement",
-                file=sys.stderr,
-            )
-            return embedded, "pdf_text"
-        raise SystemExit(
-            "No embedded text found and OCR dependencies missing.\n"
-            "  pip install prettypipeline-ocr[ocr]"
-        ) from None
-
-    _warn_mps_ocr(device, context="default OCR supplement")
-
-    try:
-        ocr_text = ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length)
-    except Exception as exc:
-        print(f"warning: Baidu OCR failed ({exc}); using embedded text only", file=sys.stderr)
-        if has_embedded:
-            return embedded, "pdf_text"
-        raise
-
-    if not ocr_text.strip():
-        if has_embedded:
-            print("warning: Baidu OCR returned empty; using embedded text only", file=sys.stderr)
-            return embedded, "pdf_text"
-        return "", "ocr"
-
-    if not has_embedded:
-        return ocr_text, "ocr"
-
-    merged = merge_texts(embedded, ocr_text)
-    if merged == embedded.strip():
-        return embedded, "pdf_text"
-    return merged, "pdf_text+ocr"
-
-
-def _extract_embedded_hybrid(
-    pdf_path: str,
-    *,
-    dpi: int,
-    device: str,
-    max_length: int,
-) -> tuple[str, str]:
-    """Legacy fast path: embedded text per page, OCR only for scan pages."""
-    doc = fitz.open(pdf_path)
-    tmp_dir = tempfile.mkdtemp(prefix="pdf_hybrid_")
-    parts: list[str] = []
-    used_pdf_text = False
-    used_ocr = False
-    model = tokenizer = None
-
-    try:
-        multi_page = len(doc) > 1
-        for i, page in enumerate(doc):
-            page_text = page.get_text().strip()
-            if looks_like_digital_pdf(page_text):
-                if multi_page:
-                    parts.append(f"--- Page {i + 1} ---\n{page_text}")
-                else:
-                    parts.append(page_text)
-                used_pdf_text = True
-            else:
-                if model is None:
-                    model, tokenizer, _ = load_model(device)
-                img_path = _rasterize_page(page, dpi, tmp_dir, i)
-                ocr_text = _ocr_page_image(model, tokenizer, img_path, max_length)
-                if multi_page:
-                    parts.append(f"--- Page {i + 1} ---\n{ocr_text}")
-                else:
-                    parts.append(ocr_text)
-                used_ocr = True
-    finally:
-        doc.close()
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    if not parts:
-        return ocr_pdf(pdf_path, dpi=dpi, device=device, max_length=max_length), "ocr"
-
-    source = "mixed" if used_pdf_text and used_ocr else ("pdf_text" if used_pdf_text else "ocr")
-    return "\n\n".join(parts), source
+        if added:
+            source = "pdf_text+ocr" if "digital" in segments.page_kinds else "ocr"
+    return text, source

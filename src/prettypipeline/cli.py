@@ -61,7 +61,12 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--embedded-only",
         action="store_true",
-        help="Skip Baidu OCR supplement (embedded text only, faster)",
+        help="Skip Baidu OCR entirely (embedded text only; scan pages use low-res vision)",
+    )
+    p.add_argument(
+        "--ocr-supplement",
+        action="store_true",
+        help="Also run full-document Baidu OCR and merge (stamps, text in figures)",
     )
     p.add_argument("--no-vision", action="store_true", help="Do not send segregated figures to GPT")
     p.add_argument(
@@ -103,6 +108,7 @@ def _run_kwargs(args) -> dict:
     kw: dict = {
         "force_ocr": args.force_ocr,
         "embedded_only": args.embedded_only,
+        "ocr_supplement": args.ocr_supplement,
         "use_vision": not args.no_vision,
         "image_detail": args.image_detail,
         "dpi": args.dpi,

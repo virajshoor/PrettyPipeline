@@ -43,6 +43,30 @@ def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s.lower().strip())
 
 
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _as_number(value: str) -> float | None:
+    cleaned = value.strip().strip("$€£¥").replace(",", "").strip()
+    if not cleaned or not re.fullmatch(r"[-+]?\d*\.?\d+", cleaned):
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _source_numbers(source_text: str) -> list[float]:
+    cleaned = re.sub(r"[$€£¥]", " ", source_text)
+    numbers = []
+    for m in _NUMBER.finditer(cleaned):
+        try:
+            numbers.append(float(m.group(0).replace(",", "")))
+        except ValueError:
+            continue
+    return numbers
+
+
 def _in_source(value: str, source_text: str) -> bool:
     if not value or not source_text:
         return False
@@ -52,6 +76,10 @@ def _in_source(value: str, source_text: str) -> bool:
     hay = _normalize(source_text)
     if needle in hay:
         return True
+    number = _as_number(needle)
+    if number is not None:
+        # 93.5 == $93.50 == 1,093.50-style formatting differences
+        return any(abs(number - n) < 1e-6 for n in _source_numbers(source_text))
     if len(needle) >= 12:
         words = [w for w in needle.split() if len(w) >= 3]
         if words and sum(1 for w in words if w in hay) / len(words) >= 0.6:
@@ -250,8 +278,14 @@ def needs_review(
     data: Any,
     source_text: str = "",
     uncertain: list[str] | None = None,
+    *,
+    vision_used: bool = False,
 ) -> list[dict[str, str]]:
-    """One reason per field — highest-priority reason wins."""
+    """One reason per field — highest-priority reason wins.
+
+    vision_used: figures were sent to the LLM, so values may legitimately
+    come from images and are not flagged not_in_source.
+    """
     best: dict[str, str] = {}
 
     def consider(field: str, reason: str) -> None:
@@ -269,9 +303,13 @@ def needs_review(
         elif isinstance(value, str):
             if looks_garbled(value) or ocr_near_field_garbled(source_text, value):
                 consider(path, "garbled_ocr")
-            elif not _in_source(value, source_text):
+            elif not vision_used and not _in_source(value, source_text):
                 consider(path, "not_in_source")
-        elif isinstance(value, (int, float)) and not _in_source(str(value), source_text):
+        elif (
+            isinstance(value, (int, float))
+            and not vision_used
+            and not _in_source(str(value), source_text)
+        ):
             consider(path, "not_in_source")
 
     return [{"field": field, "reason": reason} for field, reason in sorted(best.items())]

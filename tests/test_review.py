@@ -25,6 +25,25 @@ def test_not_in_source():
     assert ("vendor", "not_in_source") in reasons
 
 
+def test_numeric_formats_match_source():
+    data = {"total": 1093.5, "tax": "1,234.56"}
+    flags = needs_review(data, source_text="Total due: $1,093.50 plus tax $1234.56")
+    assert not [f for f in flags if f["reason"] == "not_in_source"]
+
+
+def test_vision_fields_not_flagged_not_in_source():
+    data = {"vendor": "Acme Corp"}
+    flags = needs_review(data, source_text="unrelated text", vision_used=True)
+    assert flags == []
+
+
+def test_not_in_source_still_flagged_without_vision():
+    data = {"vendor": "Acme Corp"}
+    flags = needs_review(data, source_text="unrelated text")
+    reasons = {(f["field"], f["reason"]) for f in flags}
+    assert ("vendor", "not_in_source") in reasons
+
+
 def test_review_dedup_one_reason_per_field():
     data = {"currency": None}
     flags = needs_review(data, uncertain=["currency"])

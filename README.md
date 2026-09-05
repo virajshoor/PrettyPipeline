@@ -25,33 +25,26 @@ Turn PDFs into structured JSON. Text comes from embedded PDF content or local OC
                          │              PDF input              │
                          └─────────────────┬───────────────────┘
                                            │
+                                segment_pdf (one pass)
+                                           │
               ┌────────────────────────────┼────────────────────────────┐
               │                            │                            │
               ▼                            ▼                            ▼
      ┌────────────────┐         ┌──────────────────┐         ┌──────────────────┐
      │ Embedded text  │         │ Embedded figures │         │ Scan-only pages  │
-     │ (digital PDF)  │         │ (PyMuPDF crop)   │         │ (low-res fallback│
-     └───────┬────────┘         └────────┬─────────┘         │  120 DPI max)    │
-             │                           │                   └────────┬─────────┘
+     │ (digital pages)│         │ (PyMuPDF crop)   │         │ (no embedded text│
+     └───────┬────────┘         └────────┬─────────┘         └────────┬─────────┘
              │                           │                            │
-             │              ┌────────────┴────────────┐               │
-             │              │  NOT full-page images   │               │
-             │              │  detail=low by default  │               │
-             │              └────────────┬────────────┘               │
+             │              ┌────────────┴────────────┐    ┌──────────┴──────────┐
+             │              │  NOT full-page images   │    │ Baidu OCR per page  │
+             │              │  detail=low by default  │    │ (default, [ocr]) or │
+             │              └────────────┬────────────┘    │ 120 DPI vision only │
+             │                           │                 │  (--embedded-only)  │
+             │                           │                 └──────────┬──────────┘
              │                           │                            │
              └───────────────────────────┼────────────────────────────┘
                                          │
                                          ▼
-              ┌────────────────────────┐
-              │   Embedded PDF text    │
-              └───────────┬────────────┘
-                          │ merge (dedupe)
-              ┌───────────▼────────────┐
-              │ Baidu Unlimited-OCR    │  ← default: always runs ([ocr] extra)
-              │ (full document)        │
-              └───────────┬────────────┘
-                          │
-                          ▼
               ┌────────────────────────┐
               │  Combined document text │
               │  + segregated figures   │──► GPT-5.4 nano
@@ -65,15 +58,17 @@ Turn PDFs into structured JSON. Text comes from embedded PDF content or local OC
      └─────────┘   └─────────────┘  └──────────────┘
 ```
 
-Local OCR (Unlimited-OCR) runs on **every document by default** (requires `[ocr]` extra),
-merged with embedded PDF text so nothing is missed — text in images, stamps, scan layers.
-Use `--embedded-only` to skip OCR (faster). Use `--force-ocr` for OCR-only.
+Local OCR (Unlimited-OCR) runs on **scan-only pages by default** (requires `[ocr]` extra) —
+digital pages use free embedded text and never load the OCR model. Add `--ocr-supplement`
+to also merge full-document OCR (stamps, signatures, text inside figures).
+Use `--embedded-only` to skip OCR entirely (scan pages fall back to low-res vision).
+Use `--force-ocr` for OCR-only.
 
 ## Why this is cheap
 
-- **Digital PDFs** — embedded text is free and accurate; no GPU needed.
+- **Digital PDFs** — embedded text is free and accurate; no GPU needed, OCR model never loads.
 - **Figures only** — segregated embedded images go to GPT vision at `detail=low` (not full-page raster).
-- **Baidu OCR + merge** — full-document OCR merged with embedded text by default (`[ocr]` extra).
+- **Scan pages only** — Baidu OCR runs just on pages without embedded text (`[ocr]` extra); `--ocr-supplement` merges full-document OCR when you need stamps or image text.
 - **GPT-5.4 nano** — ~$0.20 / 1M input tokens for structuring ([pricing](https://developers.openai.com/api/docs/models/gpt-5.4-nano)).
 
 ## Install
@@ -136,7 +131,7 @@ PrettyPipeline **does not** rasterize entire PDF pages for GPT unless a page is 
 |---|---|---|
 | Digital + figures | Embedded PDF text | Embedded figures only (`detail=low`) |
 | Digital, no figures | Embedded PDF text | Nothing |
-| Scan, no figures | Local OCR or low-res page | One low-res page image (120 DPI) |
+| Scan, no figures | Local OCR (default) or low-res page (`--embedded-only`) | One low-res page image (120 DPI) |
 | `--no-vision` | Same as above | Disabled |
 
 Images are **visual context only** — no CSV or table dump is generated from figures.
@@ -193,7 +188,8 @@ prettypipeline run FILE.pdf --schema SCHEMA.json
   --export csv,alpaca,...     comma-separated training exports
   --no-vision                 skip figure images to GPT
   --image-detail low|auto|high  vision token budget (default: low)
-  --embedded-only             skip Baidu OCR supplement (embedded text only)
+  --embedded-only             skip Baidu OCR entirely (embedded text only)
+  --ocr-supplement            also merge full-document Baidu OCR (stamps, image text)
   --force-ocr                 OCR only — ignore embedded text
   --model, --base-url         OpenAI LLM settings
   --ollama                    local Ollama /api/chat (WIP)

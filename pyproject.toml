@@ -68,3 +68,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: live API tests (require OPENAI_API_KEY)",
+]

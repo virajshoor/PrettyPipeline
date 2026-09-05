@@ -42,14 +42,44 @@ class ImageSegment:
 
 @dataclass
 class DocumentSegments:
-    text: str
-    source: str
+    """Canonical single-pass view of a PDF.
+
+    page_texts/page_kinds are per page: digital pages carry embedded text,
+    scan pages stay empty until ocr.fill_scan_text() fills them in place.
+    """
+
+    page_texts: list[str] = field(default_factory=list)
+    page_kinds: list[str] = field(default_factory=list)  # "digital" | "scan"
     images: list[ImageSegment] = field(default_factory=list)
     pages: int = 0
 
     @property
+    def text(self) -> str:
+        return "\n\n".join(t for t in self.page_texts if t.strip())
+
+    @property
+    def source(self) -> str:
+        digital = "digital" in self.page_kinds
+        scan_filled = any(
+            kind == "scan" and text.strip()
+            for kind, text in zip(self.page_kinds, self.page_texts)
+        )
+        if digital and scan_filled:
+            return "mixed"
+        if digital:
+            return "pdf_text"
+        if scan_filled:
+            return "ocr"
+        return "vision" if self.images else "ocr"
+
+    @property
     def image_count(self) -> int:
         return len(self.images)
+
+    @property
+    def scan_pages(self) -> list[int]:
+        """1-based page numbers without usable embedded text."""
+        return [i + 1 for i, kind in enumerate(self.page_kinds) if kind == "scan"]
 
 
 def _page_text(page: fitz.Page) -> str:
@@ -127,17 +157,17 @@ def segment_pdf(
     scan_fallback_dpi: int = 120,
 ) -> DocumentSegments:
     """
-    Split a PDF into text and figure segments.
+    Split a PDF into per-page text and figure segments in one pass.
 
     Digital pages: embedded text + embedded images only (never full-page raster).
-    Scan pages with no text: one low-res page image for GPT vision context.
+    Scan pages with no text: one low-res page image for GPT vision context;
+    their page_texts entry stays empty until ocr.fill_scan_text() OCRs them.
     """
     doc = fitz.open(pdf_path)
-    text_parts: list[str] = []
+    page_texts: list[str] = []
+    page_kinds: list[str] = []
     images: list[ImageSegment] = []
     seen_xrefs: set[int] = set()
-    used_pdf_text = False
-    used_scan_image = False
     multi_page = len(doc) > 1
 
     try:
@@ -147,11 +177,8 @@ def segment_pdf(
             has_digital_text = looks_like_digital_pdf(page_text)
 
             if has_digital_text:
-                if multi_page:
-                    text_parts.append(f"--- Page {page_num} ---\n{page_text}")
-                else:
-                    text_parts.append(page_text)
-                used_pdf_text = True
+                page_kinds.append("digital")
+                page_texts.append(f"--- Page {page_num} ---\n{page_text}" if multi_page else page_text)
                 _extract_embedded_images(
                     doc,
                     page,
@@ -162,6 +189,8 @@ def segment_pdf(
                     out=images,
                 )
             else:
+                page_kinds.append("scan")
+                page_texts.append("")
                 before = len(images)
                 _extract_embedded_images(
                     doc,
@@ -176,22 +205,12 @@ def segment_pdf(
                     seg = _scan_page_image(page, page_num, dpi=scan_fallback_dpi)
                     if seg is not None:
                         images.append(seg)
-                        used_scan_image = True
 
-        text = "\n\n".join(text_parts)
-        if used_pdf_text and (images and any("Embedded" in i.label for i in images)):
-            source = "mixed"
-        elif used_pdf_text and not images:
-            source = "pdf_text"
-        elif used_pdf_text and used_scan_image:
-            source = "mixed"
-        elif images and not used_pdf_text:
-            source = "vision"
-        elif used_pdf_text:
-            source = "pdf_text"
-        else:
-            source = "ocr"
-
-        return DocumentSegments(text=text, source=source, images=images, pages=len(doc))
+        return DocumentSegments(
+            page_texts=page_texts,
+            page_kinds=page_kinds,
+            images=images,
+            pages=len(doc),
+        )
     finally:
         doc.close()

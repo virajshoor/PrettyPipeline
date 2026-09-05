@@ -12,7 +12,7 @@ from typing import Any
 from prettypipeline._version import __version__
 from prettypipeline.export import write_exports_from_result
 from prettypipeline.extract import needs_review, require_api_key, structure
-from prettypipeline.ocr import count_pdf_pages, device_name, extract_text
+from prettypipeline.ocr import device_name, extract_text, fill_scan_text, ocr_supplement_text
 from prettypipeline.segments import segment_pdf
 
 DEFAULT_MODEL = os.environ.get("PRETTYPIPELINE_MODEL", "gpt-5.4-nano")
@@ -46,6 +46,7 @@ def run(
     ocr_only: bool = False,
     force_ocr: bool = False,
     embedded_only: bool = False,
+    ocr_supplement: bool = False,
     use_vision: bool = True,
     image_detail: str = "low",
     device: str = "",
@@ -68,32 +69,47 @@ def run(
         schema_obj = schema
 
     t0 = time.perf_counter()
-    pages = count_pdf_pages(str(pdf_path))
     device_name_str = device_name(device)
     model_name = model or (os.environ.get("OLLAMA_MODEL", "llama3.2-vision") if provider == "ollama" else DEFAULT_MODEL)
 
     segments = segment_pdf(str(pdf_path))
-    text, source = extract_text(
-        str(pdf_path),
-        force_ocr=force_ocr,
-        embedded_only=embedded_only,
-        dpi=dpi,
-        device=device,
-        max_length=max_length,
-    )
+
+    if force_ocr:
+        text, source = extract_text(
+            str(pdf_path),
+            force_ocr=True,
+            dpi=dpi,
+            device=device,
+            max_length=max_length,
+        )
+    else:
+        if not embedded_only:
+            fill_scan_text(str(pdf_path), segments, dpi=dpi, device=device, max_length=max_length)
+        text, source = segments.text, segments.source
+        if ocr_supplement and not embedded_only:
+            text, added = ocr_supplement_text(
+                str(pdf_path), text, dpi=dpi, device=device, max_length=max_length
+            )
+            if added:
+                source = "pdf_text+ocr" if "digital" in segments.page_kinds else "ocr"
 
     vision_images = [img.to_api_dict(detail=image_detail) for img in segments.images] if use_vision else []
 
     meta: dict[str, Any] = {
         "version": __version__,
         "elapsed_ms": 0,
-        "pages": pages,
+        "pages": segments.pages,
         "device": device_name_str,
         "model": model_name if not ocr_only else None,
         "llm_provider": provider if not ocr_only else None,
         "token_usage": None,
         "vision_images": len(vision_images),
-        "segments": {"text_chars": len(text), "figures": len(vision_images), "text_source": source},
+        "segments": {
+            "text_chars": len(text),
+            "figures": len(vision_images),
+            "text_source": source,
+            "scan_pages": len(segments.scan_pages),
+        },
     }
 
     if ocr_only:
@@ -118,7 +134,12 @@ def run(
         provider=provider,
         ollama_host=ollama_host,
     )
-    flags = needs_review(extracted["data"], text, extracted["uncertain_fields"])
+    flags = needs_review(
+        extracted["data"],
+        text,
+        extracted["uncertain_fields"],
+        vision_used=bool(vision_images),
+    )
     meta["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
     meta["token_usage"] = extracted.get("token_usage")
     meta["vision_images"] = extracted.get("vision_images", len(vision_images))
